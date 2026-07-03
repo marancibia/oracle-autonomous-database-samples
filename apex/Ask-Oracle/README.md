@@ -1,6 +1,6 @@
 # Ask Oracle Select AI Chatbot 5.0
 
-The **Ask Oracle Select AI** sample Oracle APEX application provides a modern, low-code interface for Oracle Select AI.
+The **Ask Oracle Select AI Chatbot** Oracle APEX application provides a modern, low-code interface for Oracle Select AI.
 
 Originally designed as a conversational chatbot for natural language access to Oracle AI Database, **Release 5.0** transforms Ask Oracle into a complete platform for building, configuring, governing, and deploying AI-powered applications using Oracle Select AI.
 
