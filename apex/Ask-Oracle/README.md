@@ -117,14 +117,15 @@ Release 5.0 automatically detects visualization intent and generates the most ap
 
 Additional enhancements include:
 
-- Automatic chart selection
+- Automatic chart selection for agents by analyzing prompts
+- Support for sunburst chart
 - Improved visualization intent detection
 - Better fallback handling
 - Persistent charts in conversation history
 
 > **Screenshot:** Automatic Chart Generation
 
-![Charts](../images/chat-generation.png)
+![Charts](../images/chart_generation.png)
 
 ---
 
