@@ -62,7 +62,7 @@ Features include:
 
 > **Screenshot:** Agent Builder
 
-![Agent Builder](../images/agent-builder.png)
+![Agent Builder](../images/agent_builder.png)
 
 ---
 
@@ -81,7 +81,7 @@ This graphical view makes it easy to understand workflow execution and orchestra
 
 > **Screenshot:** Agent Team Map
 
-![Agent Team Map](../images/agent-team-map.png)
+![Agent Team Map](../images/agent_team_map.png)
 
 ---
 
@@ -99,7 +99,7 @@ The new interface allows you to:
 
 > **Screenshot:** Prebuilt Agents
 
-![Prebuilt Agents](../images/prebuilt-agents.png)
+![Prebuilt Agents](../images/prebuilt_agents.png)
 
 ---
 
@@ -152,7 +152,7 @@ Capabilities include:
 
 > **Screenshot:** AI Profile Management
 
-![AI Profiles](../images/profile-management.png)
+![AI Profiles](../images/nl2sql_profile.png)
 
 ---
 
@@ -195,7 +195,7 @@ Administrators can configure button-level permissions to tailor functionality fo
 
 > **Screenshot:** Admin Controls
 
-![Admin Controls](../images/admin-controls.png)
+![Admin Controls](../images/access_control.png)
 
 ---
 
@@ -249,7 +249,7 @@ Since Oracle Autonomous AI Database includes Oracle APEX, installation is simple
 
 ## Download
 
-- [Download the latest Ask Oracle APEX Application](https://github.com/oracle-devrel/oracle-autonomous-database-samples/blob/main/apex/Ask-Oracle/ADB-AskOracle-Chatbot-2026-03-04.sql)
+- [Download the latest Ask Oracle APEX Application](https://github.com/oracle-devrel/oracle-autonomous-database-samples/blob/main/apex/Ask-Oracle/ADB-AskOracle-Chatbot-2026-06-04.sql)
 
 ---
 
