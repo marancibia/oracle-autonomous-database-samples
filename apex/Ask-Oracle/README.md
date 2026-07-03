@@ -1,88 +1,275 @@
-# Announcing Ask Oracle chatbot powered by Select AI
+# Ask Oracle Select AI Chatbot 5.0
 
-The Ask Oracle sample APEX application is a chatbot user interface for
-no-code Select AI interaction. Using your AI profiles and AI agents
-created using Select AI, you can easily engage with your AI models,
-database data, and vector indexes. While Select AI provides code
-interfaces using SQL, PL/SQL, and Python, this sample APEX application
-enables you to quickly and conveniently give users (coders and
-non-coders alike) access to natural language access to data and AI
-models.
+The **Ask Oracle Select AI** sample Oracle APEX application provides a modern, low-code interface for Oracle Select AI.
 
-## Ask Oracle overview
+Originally designed as a conversational chatbot for natural language access to Oracle AI Database, **Release 5.0** transforms Ask Oracle into a complete platform for building, configuring, governing, and deploying AI-powered applications using Oracle Select AI.
 
-Now in version 4, the Ask Oracle chatbot supports a broad range of
-functionality for Select AI:
+Using AI Profiles, Vector Indexes, and Oracle Select AI Agents, developers and business users can build conversational analytics, Retrieval-Augmented Generation (RAG) applications, and multi-agent workflows—all without writing application code.
 
-- **Chat** -- direct interaction with the LLM specified in your selected
-  AI profile
-- **NL2SQL** --query data in your Autonomous AI Database using natural
-  language to SQL generation and your selected AI profile
-- **RAG** -- use retrieval augmented generation (RAG) with your selected
-  AI profile that specified a vector index
-- **AI agents** -interact with your selected AI agent
-- **Explain queries** -- generate LLM-provided explanations of generated
-  queries
-- **Conversations** -- create, manage, and edit conversations for
-  long-term memory, while easily switching between conversations
-- **Charts** -- create and refine charts using explicit control or
-  natural language specification for NL2SQL results
-- **Audio generation** -- listen to responses
-- **AI profile and agent details** -- view details of AI profiles and AI
-  agents for ease of selection and easily see which profile/action or
-  agent used for each prompt
+Whether you're querying enterprise data with natural language, building AI agents visually, or deploying governed AI applications, Ask Oracle provides an intuitive Oracle APEX experience running directly inside **Oracle AI Database** and **Autonomous AI Database**.
 
-![NL2SQL](../images/Chatbot-for-NL2SQL_with_chart.png)
+---
 
-***Figure 1: Ask Oracle chatbot for NL2SQL with chart and SQL
+# What's New in Release 5.0
 
-![settings1](../images/chatbot-settings1.png) 
+Release 5.0 introduces major enhancements that transform Ask Oracle from a chatbot into a low-code AI application platform.
 
-***Figure 2: Ask Oracle Chatbot for NL2SQL Profile Settings
+## Highlights
 
-![settings1](../images/chatbot-settings2.png) 
+- 🆕 Visual Agent Builder for Oracle Select AI Agents and Agent Teams
+- 🗺️ Agent Team Map for visualizing orchestration and workflows
+- 🤖 One-click installation and management of prebuilt Oracle AI Agents
+- 📊 Automatic chart generation from natural language
+- ⚙️ Complete AI Profile lifecycle management for NL2SQL, RAG, and Agents
+- 🔒 Enterprise governance with centralized administration and button-level access control
+- 🎨 Improved branding, navigation, defaults, and application customization
+- 🚀 Enhanced usability, performance, and overall user experience
 
-***Figure 3: Ask Oracle Chatbot RAG AI Profile Settings
+---
 
-![settings1](../images/chatbot-settings3.png)
+# Ask Oracle Features
 
-***Figure4: Ask Oracle Chatbot Agent Team Settings
+Release 5.0 provides a comprehensive set of Oracle Select AI capabilities.
 
-## What is Select AI? 
+## Conversational AI
 
-## APEX in Autonomous AI Database
+- **Chat** — Direct interaction with the Large Language Model (LLM) configured in your AI Profile.
+- **NL2SQL** — Query Oracle AI Database using natural language.
+- **RAG** — Ground responses using Retrieval-Augmented Generation (RAG) with Oracle Vector Search.
+- **AI Agents** — Execute Oracle Select AI Agents and Agent Teams.
+- **Explain SQL** — Generate natural language explanations of generated SQL.
+- **Conversation History** — Create, manage, and organize conversations with long-term memory.
+- **Speech Generation** — Listen to AI responses using text-to-speech.
 
-Oracle APEX (Application Express) is a low-code application development
-platform designed to build scalable, secure, and data-driven web and
-mobile applications. It is tightly integrated with the Oracle AI
-Database, making it a powerful tool for creating database-centric
-applications. APEX allows you to focus on solving business problems
-while abstracting the complexities of traditional coding.
+---
 
-As an APEX application, you can use the Ask Oracle chatbot as is or use
-it as a starting point for further customization.
+## Visual Agent Builder
 
-## Installing the Ask Oracle chatbot
+Release 5.0 introduces a new **low-code Agent Builder** for Oracle Select AI.
 
-Since Autonomous AI Database has APEX built in, after creating your APEX
-workspace, simply import the Ask Oracle application using the APEX App
-Builder. This quick video will guide through the steps.
+Create and manage AI Agents visually without manually editing metadata.
 
-* [Install Ask Oracle Chatbot](https://youtu.be/kjeQ2AC3TFo)
+Features include:
 
-* [You can download the Ask Oracle APEX app here](https://github.com/oracle-devrel/oracle-autonomous-database-samples/blob/main/apex/Ask-Oracle/ADB-AskOracle-Chatbot-2026-03-04.sql)
+- Visual Agent Team Builder
+- Natural language agent generation
+- Team configuration
+- Agent configuration
+- Task configuration
+- Tool assignment
+- Agent validation
+- Oracle Select AI Agent Framework code generation
+
+> **Screenshot:** Agent Builder
+
+![Agent Builder](../images/agent-builder.png)
+
+---
+
+## Agent Team Map
+
+Visualize agent orchestration with the new **Agent Team Map**.
+
+The Agent Team Map displays relationships between:
+
+- Agent Teams
+- Agents
+- Tasks
+- Tools
+
+This graphical view makes it easy to understand workflow execution and orchestration.
+
+> **Screenshot:** Agent Team Map
+
+![Agent Team Map](../images/agent-team-map.png)
+
+---
+
+## Prebuilt Oracle AI Agents
+
+Quickly get started using Oracle's collection of prebuilt Select AI Agents.
+
+The new interface allows you to:
+
+- Browse available agents
+- Install agents with one click
+- Review configurations
+- Customize agents
+- Extend agents using the Visual Agent Builder
+
+> **Screenshot:** Prebuilt Agents
+
+![Prebuilt Agents](../images/prebuilt-agents.png)
+
+---
+
+## Smarter Chart Generation
+
+Charts are now a natural part of the conversation.
+
+Simply ask questions like:
+
+- *Show revenue by region as a bar chart.*
+- *Compare sales by quarter.*
+- *Display customer growth as a line chart.*
+
+Release 5.0 automatically detects visualization intent and generates the most appropriate chart.
+
+Additional enhancements include:
+
+- Automatic chart selection
+- Improved visualization intent detection
+- Better fallback handling
+- Persistent charts in conversation history
+
+> **Screenshot:** Automatic Chart Generation
+
+![Charts](../images/chat-generation.png)
+
+---
+
+## AI Profile Management
+
+Release 5.0 significantly expands AI Profile management.
+
+Manage the complete lifecycle of profiles for:
+
+- NL2SQL
+- RAG
+- AI Agents
+
+Capabilities include:
+
+- Create profiles
+- Edit profiles
+- Delete profiles
+- Validate configurations
+- Configure AI providers
+- Configure embedding models
+- Configure vector indexes
+- Configure retrieval settings
+- Reuse profiles across applications
+
+> **Screenshot:** AI Profile Management
+
+![AI Profiles](../images/profile-management.png)
+
+---
+
+## Enterprise Governance
+
+Release 5.0 introduces centralized governance and administration for enterprise AI applications.
+
+### UI Settings
+
+Customize your application with:
+
+- Application name
+- Logo
+- Branding
+- Navigation
+
+### Conversation Settings
+
+Configure default:
+
+- Conversation mode
+- NL2SQL Profile
+- RAG Profile
+- Agent Team
+
+### Action Controls
+
+Enable or disable features including:
+
+- SQL Editor
+- Export PDF
+- Export Excel
+- Delete actions
+- Conversation Timer
+- Agent Reasoning
+
+### Access Control
+
+Administrators can configure button-level permissions to tailor functionality for different users and environments.
+
+> **Screenshot:** Admin Controls
+
+![Admin Controls](../images/admin-controls.png)
+
+---
+
+# Release 5.0 Overview
+
+Ask Oracle now supports:
+
+| Capability | Description |
+|------------|-------------|
+| 💬 Chat | Direct LLM conversations |
+| 🗄️ NL2SQL | Natural Language to SQL |
+| 📚 RAG | Retrieval-Augmented Generation |
+| 🤖 AI Agents | Oracle Select AI Agent Framework |
+| 🏗️ Agent Builder | Visual low-code Agent Builder |
+| 🗺️ Agent Team Map | Visual workflow orchestration |
+| 📦 Prebuilt Agents | Install Oracle AI Agents |
+| 📊 Charts | Automatic visualization |
+| 📝 SQL Explanation | Explain generated SQL |
+| 💾 Conversations | Long-term conversation history |
+| 🔊 Speech | Text-to-Speech responses |
+| ⚙️ AI Profiles | Complete lifecycle management |
+| 🔒 Governance | Enterprise administration |
+| 🎨 Branding | UI customization |
+| 🔑 Access Control | Button-level permissions |
+
+---
+
+# Oracle APEX in Autonomous AI Database
+
+Oracle APEX (Application Express) is Oracle's low-code development platform for building secure, scalable, and data-driven web applications.
+
+Running directly inside Oracle AI Database and Autonomous AI Database, Ask Oracle demonstrates how Oracle APEX and Oracle Select AI work together to build enterprise AI applications with minimal code.
+
+You can use the application as-is or customize it as the foundation for your own AI-powered solutions.
+
+---
+
+# Installing Ask Oracle
+
+Since Oracle Autonomous AI Database includes Oracle APEX, installation is simple.
+
+1. Create an Oracle APEX Workspace.
+2. Import the Ask Oracle application using **App Builder**.
+3. Configure your Oracle Select AI Profiles.
+4. Configure your Agent Teams (optional).
+5. Start asking questions.
+
+## Installation Video
+
+- [Install Ask Oracle Chatbot](https://youtu.be/kjeQ2AC3TFo)
+
+## Download
+
+- [Download the latest Ask Oracle APEX Application](https://github.com/oracle-devrel/oracle-autonomous-database-samples/blob/main/apex/Ask-Oracle/ADB-AskOracle-Chatbot-2026-03-04.sql)
+
+---
 
 # Resources
 
-For more information...
+Learn more about Oracle Select AI and Oracle APEX.
 
-* [Autonomous AI Database Select AI](https://www.oracle.com/autonomous-database/select-ai/)
-* [Getting Started with Select AI](https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/select-ai-get-started.html)
-* [Manage AI profiles](https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/select-ai-manage-profiles.html)
-* [Select AI Agent](https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/select-ai-agent.html)
-* [Oracle APEX](https://apex.oracle.com/en/)
-* [APEX in Autonomous AI Database](https://docs.oracle.com/en/cloud/paas/autonomous-database/serverless/adbsb/application-express-autonomous-database.html)
+- [Oracle Autonomous AI Database Select AI](https://www.oracle.com/autonomous-database/select-ai/)
+- [Getting Started with Select AI](https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/select-ai-get-started.html)
+- [Manage AI Profiles](https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/select-ai-manage-profiles.html)
+- [Oracle Select AI Agent Framework](https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/select-ai-agent.html)
+- [Oracle APEX](https://apex.oracle.com/)
+- [Oracle APEX in Autonomous AI Database](https://docs.oracle.com/en/cloud/paas/autonomous-database/serverless/adbsb/application-express-autonomous-database.html)
 
-<hr>
-Copyright (c) 2025 Oracle and/or its affiliates.<br>
-Licensed under the Universal Permissive License v 1.0 as shown at https://oss.oracle.com/licenses/upl/
+---
+
+## License
+
+Copyright (c) 2026 Oracle and/or its affiliates.
+
+Licensed under the **Universal Permissive License (UPL) Version 1.0**
+
+https://oss.oracle.com/licenses/upl/
