@@ -1,276 +1,117 @@
-# Ask Oracle Select AI Chatbot 5.0
+# Ask Oracle Select AI 5.0
 
-The **Ask Oracle Select AI Chatbot** Oracle APEX application provides a modern, low-code interface for Oracle Select AI.
+Ask Oracle Select AI is an Oracle APEX application that provides a low-code interface to Oracle Select AI on Oracle AI Database and Autonomous AI Database. It brings conversational AI, natural-language-to-SQL (NL2SQL), Retrieval-Augmented Generation (RAG), charting, and agent experiences into one application that you can inspect, customize, and extend.
 
-Originally designed as a conversational chatbot for natural language access to Oracle AI Database, **Release 5.0** transforms Ask Oracle into a complete platform for building, configuring, governing, and deploying AI-powered applications using Oracle Select AI.
+Release 5.0 evolves the original conversational interface into a low-code application platform for configuring, governing, and deploying Select AI-powered experiences.
 
-Using AI Profiles, Vector Indexes, and Oracle Select AI Agents, developers and business users can build conversational analytics, Retrieval-Augmented Generation (RAG) applications, and multi-agent workflows—all without writing application code.
+## What's new in Release 5.0
 
-Whether you're querying enterprise data with natural language, building AI agents visually, or deploying governed AI applications, Ask Oracle provides an intuitive Oracle APEX experience running directly inside **Oracle AI Database** and **Autonomous AI Database**.
+- Visual Agent Builder for Oracle Select AI Agent Framework agents and teams
+- Agent Team Map for inspecting agent, task, and tool relationships
+- Prebuilt Oracle Select AI agents that can be installed and customized in the application
+- Natural-language chart generation and more suitable fallback displays
+- AI Profile lifecycle management for NL2SQL, RAG, and agents
+- Centralized governance, defaults, branding, and button-level access controls
 
----
+## Why use Release 5.0?
 
-# What's New in Release 5.0
+Release 5.0 helps teams move from asking questions to building governed AI applications. Use it to configure NL2SQL and RAG profiles, build and validate agent teams visually, generate charts from natural-language prompts, and control the capabilities available to different users.
 
-Release 5.0 introduces major enhancements that transform Ask Oracle from a chatbot into a low-code AI application platform.
+## Key capabilities
 
-## Highlights
+- **Chat** — converse directly with the LLM configured in an AI Profile.
+- **NL2SQL** — query Oracle AI Database using natural language and explain generated SQL.
+- **RAG** — ground responses in trusted text content using Retrieval-Augmented Generation and Oracle AI Vector Search.
+- **Agents and teams** — run Oracle Select AI Agent Framework agents and agent teams.
+- **Visual Agent Builder** — generate an initial team from natural language, then refine its teams, agents, tasks, and tools in one visual workflow before validating it.
+- **Agent Team Map** — view routing and relationships among teams, agents, tasks, and tools.
+- **Charts** — request visualizations in natural language. If the requested chart does not fit the returned data shape, Ask Oracle can use a more appropriate display, such as a table or alternate chart type.
+- **Profiles and governance** — create, edit, validate, and reuse AI Profiles; configure application defaults, branding, and feature access.
+- **Conversations** — organize conversation history and optionally use text-to-speech for responses.
 
-- 🆕 Visual Agent Builder for Oracle Select AI Agents and Agent Teams
-- 🗺️ Agent Team Map for visualizing orchestration and workflows
-- 🤖 One-click installation and management of prebuilt Oracle AI Agents
-- 📊 Automatic chart generation from natural language
-- ⚙️ Complete AI Profile lifecycle management for NL2SQL, RAG, and Agents
-- 🔒 Enterprise governance with centralized administration and button-level access control
-- 🎨 Improved branding, navigation, defaults, and application customization
-- 🚀 Enhanced usability, performance, and overall user experience
+## Screenshots
 
----
+The application includes screens for Agent Builder, Agent Team Map, prebuilt agents, chart generation, AI Profile management, and access controls. Screenshots are not currently stored in this repository; the included installation guide shows the import flow. Contributions that add screenshots should use descriptive alt text, for example: `![Agent Builder showing agents, tasks, and assigned tools]`.
 
-# Ask Oracle Features
+## Repository contents
 
-Release 5.0 provides a comprehensive set of Oracle Select AI capabilities.
+| Path | Purpose |
+| --- | --- |
+| [`ADB-AskOracle-Chatbot-2026-07-23.sql`](ADB-AskOracle-Chatbot-2026-07-23.sql) | Oracle APEX application export for Ask Oracle Select AI Release 5.0. It includes supporting objects. |
+| [`Ask Oracle App Installation Steps.pdf`](Ask%20Oracle%20App%20Installation%20Steps.pdf) | Installation guide. |
+| `README.md` | This overview, setup guidance, and troubleshooting notes. |
 
-## Conversational AI
+Prebuilt agent definitions and README image assets are not separate files in this repository. Use the application interface after import to browse and manage the prebuilt agents provided by the application.
 
-- **Chat** — Direct interaction with the Large Language Model (LLM) configured in your AI Profile.
-- **NL2SQL** — Query Oracle AI Database using natural language.
-- **RAG** — Ground responses using Retrieval-Augmented Generation (RAG) with Oracle Vector Search.
-- **AI Agents** — Execute Oracle Select AI Agents and Agent Teams.
-- **Explain SQL** — Generate natural language explanations of generated SQL.
-- **Conversation History** — Create, manage, and organize conversations with long-term memory.
-- **Speech Generation** — Listen to AI responses using text-to-speech.
+## Prerequisites
 
----
+Before importing the application, make sure you have the following:
 
-## Visual Agent Builder
+- An Oracle AI Database or Autonomous AI Database environment with Oracle APEX and Oracle Select AI available. The exported application was generated with Oracle APEX **24.2.17**; import it into a compatible APEX environment.
+- An APEX workspace and parsing schema. Import the export as that schema, or use a database account with `APEX_ADMINISTRATOR_ROLE`.
+- A configured Select AI provider credential, supported model, and AI Profile. The profile must be usable by the application's parsing schema.
+- For NL2SQL, access to the schemas and objects you intend to query.
+- For RAG, a configured embedding model and an Oracle AI Vector Search vector index containing the content to retrieve.
+- For agent experiences, the required Oracle Select AI Agent Framework configuration and an agent team selected in the application.
 
-Release 5.0 introduces a new **low-code Agent Builder** for Oracle Select AI.
+Grant only the database privileges needed by the parsing schema and the users of the application. The exact grants depend on your database, provider, selected AI capabilities, and the data you expose. Consult your database administrator and the Oracle Select AI documentation before granting access to production data.
 
-Create and manage AI Agents visually without manually editing metadata.
+## Installation
 
-Features include:
+1. Download or clone this repository and locate [`ADB-AskOracle-Chatbot-2026-07-23.sql`](ADB-AskOracle-Chatbot-2026-07-23.sql).
+2. Sign in to the target Oracle APEX workspace as a workspace administrator or developer with permission to import applications.
+3. Open **App Builder**, select **Import**, choose the SQL export, and complete the import wizard. Choose the target parsing schema when prompted.
+4. Review the supporting-object installation during the import. The application export includes supporting objects; allow the import to install them when appropriate for your environment.
+5. Open the imported application and configure its Select AI Profiles, conversation defaults, and access controls. Configure RAG profiles and vector indexes only if you plan to use RAG; configure an agent team only if you plan to use agents.
+6. Run the application and complete the validation checks below.
 
-- Visual Agent Team Builder
-- Natural language agent generation
-- Team configuration
-- Agent configuration
-- Task configuration
-- Tool assignment
-- Agent validation
-- Oracle Select AI Agent Framework code generation
+For the illustrated import procedure, see the included [installation guide](Ask%20Oracle%20App%20Installation%20Steps.pdf) or the [installation video](https://youtu.be/kjeQ2AC3TFo).
 
-> **Screenshot:** Agent Builder
+## Configuration
 
-![Agent Builder](../images/agent_builder.png)
+Configure the application before making it available to end users:
 
----
+- **AI Profiles:** Create or select the profiles for Chat, NL2SQL, RAG, and agents. Validate the provider credential, model, and profile settings.
+- **Conversation defaults:** Choose the default conversation mode and the default NL2SQL Profile, RAG Profile, and optional Agent Team.
+- **RAG:** Set the embedding model, Oracle AI Vector Search vector index, and retrieval settings. Load and index your trusted content before testing retrieval.
+- **Agents:** Use Agent Builder to create or refine teams, agents, tasks, and tools; validate the team before assigning it as a default.
+- **Governance:** Set application name, logo, branding, navigation, and permissions for actions such as SQL Editor, exports, deletion, conversation timer, and agent reasoning.
 
-## Agent Team Map
+## Quick start and validation
 
-Visualize agent orchestration with the new **Agent Team Map**.
+After configuration, verify each enabled capability with a prompt appropriate for your data:
 
-The Agent Team Map displays relationships between:
+| Capability | Example validation |
+| --- | --- |
+| Chat | Ask a general question supported by the configured model. |
+| NL2SQL | Ask a question about a table the parsing schema can query, such as “How many orders were created this month?” |
+| RAG | Ask a question answered by content you have loaded into the configured vector index. |
+| Agents | Select an agent team and ask it to complete a task that uses its configured tools. |
+| Charts | Ask “Show monthly sales as a line chart.” Confirm that a chart, table, or another suitable display is returned. |
 
-- Agent Teams
-- Agents
-- Tasks
-- Tools
+## Troubleshooting
 
-This graphical view makes it easy to understand workflow execution and orchestration.
+| Symptom | What to check |
+| --- | --- |
+| No AI Profile is available | Create or grant access to a Select AI Profile for the parsing schema, then select it in the application defaults. |
+| Provider, credential, or model error | Verify the provider credential, model name and availability, network policy, and the profile configuration. |
+| NL2SQL cannot query data | Verify grants and synonyms for the parsing schema, and confirm the profile is configured for the intended schemas and objects. |
+| RAG returns no relevant results | Confirm the correct embedding model, vector index, indexed content, and retrieval settings are configured. |
+| Agent option is unavailable or fails | Confirm Agent Framework configuration, validate the agent team, and select the team in the conversation settings. |
+| A chart is not shown | Confirm the prompt and result are suitable for a visualization; Ask Oracle may deliberately return a table or alternate chart when the requested shape is unsuitable. |
+| A button or feature is missing | Review the application's action controls and button-level access settings for the current user. |
 
-> **Screenshot:** Agent Team Map
-
-![Agent Team Map](../images/agent_team_map.png)
-
----
-
-## Prebuilt Oracle AI Agents
-
-Quickly get started using Oracle's collection of prebuilt Select AI Agents.
-
-The new interface allows you to:
-
-- Browse available agents
-- Install agents with one click
-- Review configurations
-- Customize agents
-- Extend agents using the Visual Agent Builder
-
-> **Screenshot:** Prebuilt Agents
-
-![Prebuilt Agents](../images/prebuilt_agents.png)
-
----
-
-## Smarter Chart Generation
-
-Charts are now a natural part of the conversation.
-
-Simply ask questions like:
-
-- *Show revenue by region as a bar chart.*
-- *Compare sales by quarter.*
-- *Display customer growth as a line chart.*
-
-Release 5.0 automatically detects visualization intent and generates the most appropriate chart.
-
-Additional enhancements include:
-
-- Automatic chart selection for agents by analyzing prompts
-- Support for sunburst chart
-- Improved visualization intent detection
-- Better fallback handling
-- Persistent charts in conversation history
-
-> **Screenshot:** Automatic Chart Generation
-
-![Charts](../images/chart_generation.png)
-
----
-
-## AI Profile Management
-
-Release 5.0 significantly expands AI Profile management.
-
-Manage the complete lifecycle of profiles for:
-
-- NL2SQL
-- RAG
-- AI Agents
-
-Capabilities include:
-
-- Create profiles
-- Edit profiles
-- Delete profiles
-- Validate configurations
-- Configure AI providers
-- Configure embedding models
-- Configure vector indexes
-- Configure retrieval settings
-- Reuse profiles across applications
-
-> **Screenshot:** AI Profile Management
-
-![AI Profiles](../images/nl2sql_profile.png)
-
----
-
-## Enterprise Governance
-
-Release 5.0 introduces centralized governance and administration for enterprise AI applications.
-
-### UI Settings
-
-Customize your application with:
-
-- Application name
-- Logo
-- Branding
-- Navigation
-
-### Conversation Settings
-
-Configure default:
-
-- Conversation mode
-- NL2SQL Profile
-- RAG Profile
-- Agent Team
-
-### Action Controls
-
-Enable or disable features including:
-
-- SQL Editor
-- Export PDF
-- Export Excel
-- Delete actions
-- Conversation Timer
-- Agent Reasoning
-
-### Access Control
-
-Administrators can configure button-level permissions to tailor functionality for different users and environments.
-
-> **Screenshot:** Admin Controls
-
-![Admin Controls](../images/access_control.png)
-
----
-
-# Release 5.0 Overview
-
-Ask Oracle now supports:
-
-| Capability | Description |
-|------------|-------------|
-| 💬 Chat | Direct LLM conversations |
-| 🗄️ NL2SQL | Natural Language to SQL |
-| 📚 RAG | Retrieval-Augmented Generation |
-| 🤖 AI Agents | Oracle Select AI Agent Framework |
-| 🏗️ Agent Builder | Visual low-code Agent Builder |
-| 🗺️ Agent Team Map | Visual workflow orchestration |
-| 📦 Prebuilt Agents | Install Oracle AI Agents |
-| 📊 Charts | Automatic visualization |
-| 📝 SQL Explanation | Explain generated SQL |
-| 💾 Conversations | Long-term conversation history |
-| 🔊 Speech | Text-to-Speech responses |
-| ⚙️ AI Profiles | Complete lifecycle management |
-| 🔒 Governance | Enterprise administration |
-| 🎨 Branding | UI customization |
-| 🔑 Access Control | Button-level permissions |
-
----
-
-# Oracle APEX in Autonomous AI Database
-
-Oracle APEX (Application Express) is Oracle's low-code development platform for building secure, scalable, and data-driven web applications.
-
-Running directly inside Oracle AI Database and Autonomous AI Database, Ask Oracle demonstrates how Oracle APEX and Oracle Select AI work together to build enterprise AI applications with minimal code.
-
-You can use the application as-is or customize it as the foundation for your own AI-powered solutions.
-
----
-
-# Installing Ask Oracle
-
-Since Oracle Autonomous AI Database includes Oracle APEX, installation is simple.
-
-1. Create an Oracle APEX Workspace.
-2. Import the Ask Oracle application using **App Builder**.
-3. Configure your Oracle Select AI Profiles.
-4. Configure your Agent Teams (optional).
-5. Start asking questions.
-
-## Installation Video
-
-- [Install Ask Oracle Chatbot](https://youtu.be/kjeQ2AC3TFo)
-
-## Download
-
-- [Download the latest Ask Oracle APEX Application](https://github.com/oracle-devrel/oracle-autonomous-database-samples/blob/main/apex/Ask-Oracle/ADB-AskOracle-Chatbot-2026-06-04.sql)
-
----
-
-# Resources
-
-Learn more about Oracle Select AI and Oracle APEX.
+## Resources
 
 - [Oracle Autonomous AI Database Select AI](https://www.oracle.com/autonomous-database/select-ai/)
-- [Getting Started with Select AI](https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/select-ai-get-started.html)
+- [Getting started with Select AI](https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/select-ai-get-started.html)
 - [Manage AI Profiles](https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/select-ai-manage-profiles.html)
 - [Oracle Select AI Agent Framework](https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/select-ai-agent.html)
 - [Oracle APEX](https://apex.oracle.com/)
 - [Oracle APEX in Autonomous AI Database](https://docs.oracle.com/en/cloud/paas/autonomous-database/serverless/adbsb/application-express-autonomous-database.html)
 
----
-
 ## License
 
 Copyright (c) 2026 Oracle and/or its affiliates.
 
-Licensed under the **Universal Permissive License (UPL) Version 1.0**
-
-https://oss.oracle.com/licenses/upl/
+Licensed under the [Universal Permissive License (UPL), Version 1.0](https://oss.oracle.com/licenses/upl/).
