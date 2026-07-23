@@ -13,7 +13,7 @@ adb_db_name      = "primarydb"
 
 admin_password = ""
 
-db_workload = "OLTP"
+db_workload = "OLTP" # OLTP=ATP | LH=LAKEHOUSE | DW=ADW | AJD=JSON | APEX
 
 compute_count = 2
 data_storage_size_in_tbs = 1

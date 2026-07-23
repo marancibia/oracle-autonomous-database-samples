@@ -57,8 +57,10 @@ Open tts-backup-env.txt file downloaded to the project directory and provide the
 
 ***PROJECT_NAME*** : (REQUIRED INPUT) Name for transport tablespace project. \
 ***DATABASE_NAME*** : (REQUIRED INPUT) Database Name containing the tablespaces. \
-***TABLESPACES*** : (OPTIONAL INPUT) List of comma separated tablespaces to be transported.  Leave empty to transport all user tablespaces. \
-***SCHEMAS*** : (OPTIONAL INPUT) List of comma separated schemas to be exported. Leave empty to export all non-common schemas.
+***TABLESPACES*** : (OPTIONAL INPUT) List of comma separated tablespaces to be transported. Leave empty to transport all user tablespaces. Cannot be used with EXCLUDE_TABLESPACES. \
+***EXCLUDE_TABLESPACES*** : (OPTIONAL INPUT) List of comma separated tablespaces to exclude when TABLESPACES is not provided. Cannot be used with TABLESPACES. \
+***SCHEMAS*** : (OPTIONAL INPUT) Comma-separated list of schemas to export. Leave empty to export the discovered local schemas. Cannot be used with EXCLUDE_SCHEMAS. Use plain schema names for normal schema export, and use source:target entries to remap supported common-user objects into a local target schema. Example: USER1,USER2,C##APP:APP_LOCAL \
+***EXCLUDE_SCHEMAS*** : (OPTIONAL INPUT) List of comma separated schemas to exclude when SCHEMAS is not provided. Cannot be used with SCHEMAS.
 
 ##### Database connection inputs
 
@@ -112,7 +114,13 @@ Leave these a blank unless really needed.
 
 ***DVREALM_USER*** - (OPTIONAL INPUT) Required only if Database Vault is enabled and configured in the source database. Specify a Database Vault realm owner or authorized user required to access objects protected by Database Vault during the backup process. If not provided and Database Vault is enabled, backup will fail with an error.
 
-***DVREALM_PASSWORD*** - (RUNTIME INPUT) Required only if Database Vault is enabled and configured in the source. Password for the specified DVREALM_USER. If not provided and Database Vault is enabled, backup will fail with an error. Provide as CLI runtime input when prompted. This prompt appears only if DVREALM_USER is provided.
+***DVREALM_PASSWORD*** - (RUNTIME INPUT) Required only if Database Vault is enabled and configured in the source. Password for the specified DVREALM_USER. If not provided and Database Vault is enabled, backup will fail with an error. Provide as CLI runtime input when prompted. This prompt appears only if DVREALM_USER is provided
+
+##### Optional tool behavior inputs
+
+***IGNORE_NON_FATAL_ERRORS*** : (OPTIONAL INPUT) Accepted values TRUE/true or FALSE/false. When set to TRUE, logical object validation findings that identify objects not transported are reported but do not stop the backup. If not provided, value defaults to FALSE.
+
+***JDK8_PATH*** : (OPTIONAL INPUT) Path to a JDK 8 installation. Configure this only when the OCI installer fails with the default ORACLE_HOME JDK and the tool needs to retry using JDK 8. Leave empty unless needed.
 
 **Backup Utility Sample Inputs**
 ```
@@ -174,6 +182,12 @@ Leave these a blank unless really needed.
   TRANSPORT_TABLES_PROTECTED_BY_OLS_POLICIES=FALSE
   TRANSPORT_DB_PROTECTED_BY_DATABASE_VAULT=FALSE
   DVREALM_USER=
+  
+  ################################################################################
+  ###                     Optional tool behavior inputs                         ###
+  ################################################################################
+  IGNORE_NON_FATAL_ERRORS=FALSE
+  JDK8_PATH=
 ```
 
 Run the TTS Backup Tool from the project directory as below. User will be prompted for database password and optional TDE wallet store password.
@@ -273,8 +287,10 @@ Open tts-backup-env.txt file downloaded to the project directory and provide the
 
 ***PROJECT_NAME*** : (REQUIRED INPUT) Name for transport tablespace project. \
 ***DATABASE_NAME*** : (REQUIRED INPUT) Database Name containing the tablespaces. \
-***TABLESPACES*** : (OPTIONAL INPUT) List of comma separated tablespaces to be transported.  Leave empty to transport all user tablespaces. \
-***SCHEMAS*** : (OPTIONAL INPUT) List of comma separated schemas to be exported. Leave empty to export all non-common schemas.
+***TABLESPACES*** : (OPTIONAL INPUT) List of comma separated tablespaces to be transported. Leave empty to transport all user tablespaces. Cannot be used with EXCLUDE_TABLESPACES. \
+***EXCLUDE_TABLESPACES*** : (OPTIONAL INPUT) List of comma separated tablespaces to exclude when TABLESPACES is not provided. Cannot be used with TABLESPACES. \
+***SCHEMAS*** : (OPTIONAL INPUT) Comma-separated list of schemas to export. Leave empty to export the discovered local schemas. Cannot be used with EXCLUDE_SCHEMAS. Use plain schema names for normal schema export, and use source:target entries to remap supported common-user objects into a local target schema. Example: USER1,USER2,C##APP:APP_LOCAL \
+***EXCLUDE_SCHEMAS*** : (OPTIONAL INPUT) List of comma separated schemas to exclude when SCHEMAS is not provided. Cannot be used with SCHEMAS.
 
 ##### Database connection inputs
 
@@ -320,7 +336,13 @@ Open tts-backup-env.txt file downloaded to the project directory and provide the
 
 ***DVREALM_USER*** - (OPTIONAL INPUT) Required only if Database Vault is enabled and configured in the source database. Specify a Database Vault realm owner or authorized user required to access objects protected by Database Vault during the backup process. If not provided and Database Vault is enabled, backup will fail with an error.
 
-***DVREALM_PASSWORD*** - (RUNTIME INPUT) Required only if Database Vault is enabled and configured in the source. Password for the specified DVREALM_USER. If not provided and Database Vault is enabled, backup will fail with an error. Provide as CLI runtime input when prompted. This prompt appears only if DVREALM_USER is provided.
+***DVREALM_PASSWORD*** - (RUNTIME INPUT) Required only if Database Vault is enabled and configured in the source. Password for the specified DVREALM_USER. If not provided and Database Vault is enabled, backup will fail with an error. Provide as CLI runtime input when prompted. This prompt appears only if DVREALM_USER is provided
+
+##### Optional tool behavior inputs
+
+***IGNORE_NON_FATAL_ERRORS*** : (OPTIONAL INPUT) Accepted values TRUE/true or FALSE/false. When set to TRUE, logical object validation findings that identify objects not transported are reported but do not stop the backup. If not provided, value defaults to FALSE.
+
+***JDK8_PATH*** : (OPTIONAL INPUT) Path to a JDK 8 installation. Configure this only when the OCI installer fails with the default ORACLE_HOME JDK and the tool needs to retry using JDK 8. Leave empty unless needed.
 
 **Backup Utility Sample Inputs**
 ```
@@ -377,6 +399,12 @@ Open tts-backup-env.txt file downloaded to the project directory and provide the
   TRANSPORT_TABLES_PROTECTED_BY_OLS_POLICIES=FALSE
   TRANSPORT_DB_PROTECTED_BY_DATABASE_VAULT=FALSE
   DVREALM_USER=
+  
+  ################################################################################
+  ###                     Optional tool behavior inputs                         ###
+  ################################################################################
+  IGNORE_NON_FATAL_ERRORS=FALSE
+  JDK8_PATH=
 ```
 
 Run the TTS Backup Tool from the project directory as below. User will be prompted for database password and optional TDE wallet store password.

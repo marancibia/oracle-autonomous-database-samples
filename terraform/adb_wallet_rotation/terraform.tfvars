@@ -15,13 +15,8 @@ adb_workload_type  = "LH"   # OLTP=ATP | LH=LAKEHOUSE | DW=ADW | AJD=JSON | APEX
 adb_db_version     = "26ai"
 adb_cpu_core_count = 2
 adb_storage_tbs    = 1
-adb_auto_scaling   = false
 
-# ── ACLs ──────────────────────────────────────────────────────
-# Add all IPs or ranges that should have access
-acl_allowed_cidrs = [
-  ""
-]
+# ── Wallet ────────────────────────────────────────────────────
 
-# ── Security ──────────────────────────────────────────────────
-require_mtls = false
+wallet_password    = ""
+wallet_output_path = "./wallet.zip"
