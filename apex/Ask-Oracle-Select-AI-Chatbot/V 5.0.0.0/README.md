@@ -31,13 +31,13 @@ Release 5.0 helps teams move from asking questions to building governed AI appli
 
 ## Screenshots
 
-![Agent Builder showing an agent team with its agents, tasks, and assigned tools](../images/agent_builder.png)
+![Agent Builder showing an agent team with its agents, tasks, and assigned tools](../../images/agent_builder.png)
 
-![Agent Team Map showing relationships among teams, agents, tasks, and tools](../images/agent_team_map.png)
+![Agent Team Map showing relationships among teams, agents, tasks, and tools](../../images/agent_team_map.png)
 
-![Chart generation displaying a visualization produced from a natural-language prompt](../images/chart_generation.png)
+![Chart generation displaying a visualization produced from a natural-language prompt](../../images/chart_generation.png)
 
-![AI Profile management screen for configuring an NL2SQL profile](../images/nl2sql_profile.png)
+![AI Profile management screen for configuring an NL2SQL profile](../../images/nl2sql_profile.png)
 
 ## Repository contents
 
@@ -71,7 +71,7 @@ Grant only the database privileges needed by the parsing schema and the users of
 5. Open the imported application and configure its Select AI Profiles, conversation defaults, and access controls. Configure RAG profiles and vector indexes only if you plan to use RAG; configure an agent team only if you plan to use agents.
 6. Run the application and complete the validation checks below.
 
-For the illustrated import procedure, see the included [installation guide](Ask%20Oracle%20App%20Installation%20Steps.pdf) or [watch the installation video on YouTube](https://youtu.be/kjeQ2AC3TFo). The local [MP4 copy](../images/Ask%20Oracle%20App%20Installation%20video.mp4) is provided for download; GitHub does not reliably provide in-page MP4 playback for repository README content.
+For the illustrated import procedure, see the included [installation guide](Ask%20Oracle%20App%20Installation%20Steps.pdf) or [watch the installation video on YouTube](https://youtu.be/kjeQ2AC3TFo). The local [MP4 copy](../../images/Ask%20Oracle%20App%20Installation%20video.mp4) is provided for download; GitHub does not reliably provide in-page MP4 playback for repository README content.
 
 ## Configuration
 
