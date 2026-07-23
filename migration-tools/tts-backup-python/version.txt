@@ -1,3 +1,31 @@
+26.6.2.1 - 09 JUN 2026
+ + support transport of common users 
+ + support shared connection backup
+
+26.6.1.1 - 02 JUN 2026
+ + backup levels to level_0,level_1_1,level_1_2,..
+ - remove oci sdk dependency and use curl
+ + add IGNORE_NON_FATAL_ERRORS and JDK8_PATH to input env file
+ + add EXCLUDE_SCHEMAS and EXCLUDE_TABLESPACES to input env file
+ + Report dry run errors and list down objects
+ + update get_tablespaces and get_schemas
+ + update validate_tablespaces and validate_schemas
+ + update logical_object_validation
+ + validation for distinct bucket urls
+ + catch rman failure incase no error code and incident report
+ + transport_set_check for dry_run/level_0/final_backup
+
+26.5.4.1 - 21 May 2026
+ + Add support for XML table export
+ - Remove schema and tablespace validation for XMLTYPE tables
+
+26.5.3.2 - 18 May 2026
+ + fix client runs
+ - Escape '$' for EXCLUDE TABLES removed as sqlplus run without shell
+ + Run sqlplus with credential supplied through stdin
+ + Run rman with script supplied through stdin
+ + Run expdp using parfile
+
 26.2.3.2 - 20 February 2026
  + Escape '$' in table names (EXCLUDE_TABLES) e.g. TABLE$1 --> TABLE\$1
  + Add users to schema list those have obj grants on tbs list if schema list not provided

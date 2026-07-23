@@ -11,7 +11,7 @@ compartment_ocid = ""
 adb_display_name   = ""
 adb_db_name        = ""
 adb_admin_password = ""
-adb_workload_type  = "DW"    # OLTP=ATP | DW=ADW | AJD=JSON | APEX
+adb_workload_type  = "LH"   # OLTP=ATP | LH=LAKEHOUSE | DW=ADW | AJD=JSON | APEX
 adb_db_version     = "26ai"
 adb_cpu_core_count = 2
 adb_storage_tbs    = 1

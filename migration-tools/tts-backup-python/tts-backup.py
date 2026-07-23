@@ -13,13 +13,16 @@ from requests.auth import HTTPBasicAuth
 import socket
 import tarfile
 import shutil
-import oci
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 import math
 import getpass
 import functools
 from datetime import datetime
 import re
+import base64
+import hashlib
+import tempfile
+
 
 
 print = functools.partial(print, flush=True)
@@ -112,6 +115,294 @@ def escape_dollar(raw):
       tables.append(tbl)
     return ",".join(tables)
 
+def normalize_backup_level(backup_level):
+  if isinstance(backup_level, int):
+    return 0 if backup_level == 0 else f"1_{backup_level}"
+
+  backup_level_str = str(backup_level).strip()
+  if backup_level_str == "0":
+    return 0
+
+  if backup_level_str.isdigit():
+    return f"1_{backup_level_str}"
+
+  return backup_level_str.replace(".", "_")
+
+def next_backup_level(backup_level):
+  backup_level = normalize_backup_level(backup_level)
+  if backup_level == 0:
+    return "1_1"
+
+  major_level, minor_level = str(backup_level).split("_", 1)
+  return f"{major_level}_{int(minor_level) + 1}"
+
+def _parse_common_user_remap(common_user_remap):
+  mappings = {}
+  raw_value = common_user_remap.strip()
+  if not raw_value:
+    return mappings
+  
+  for entry in raw_value.split(','):
+    if not entry:
+      continue
+    
+    parts = entry.split(':')
+    if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+      raise ValueError(f"Invalid common-user remap entry : {entry}. Expected source:target.")
+    
+    source = parts[0].strip().upper()
+    target = parts[1].strip().upper()
+
+    if source in mappings:
+      raise ValueError(f"Duplicate common-user remap source schema {source}.")
+    
+    if source == target:
+      raise ValueError(f"Common-user remap source and target must be different: {source}.")
+    
+    mappings[source] = target
+  
+  return mappings
+
+def _normalize_schema_input(schemas):
+  schema_list = []
+  common_user_remap_entries = []
+
+  for entry in schemas.split(','):
+    entry = entry.strip()
+    if not entry:
+      continue
+
+    if ':' in entry:
+      common_user_remap_entries.append(entry.upper())
+    else:
+      schema_list.append(entry.upper())
+
+  return ",".join(schema_list), ",".join(common_user_remap_entries)  
+
+class OCI_CURL_SIGNER:
+  """
+  Helper class to call OCI Object Storage REST APIs without importing OCI SDK.
+
+  What it does:
+  1. Parses the Object Storage URL
+  2. Builds the OCI signing string
+  3. Uses openssl with full path to sign it
+  4. Sends the request using curl
+  5. Passes headers through curl stdin config, not curl -H CLI args
+  """
+  def __init__(self, env):
+    self._env = env
+    self._openssl_path = os.environ.get("OPENSSL_PATH", "/usr/bin/openssl")
+
+    if not os.path.isfile(self._openssl_path) or not os.access(self._openssl_path, os.X_OK):
+      print_stderr(
+          f"openssl not found or not executable at {self._openssl_path}. "
+          "Set OPENSSL_PATH to the absolute path of the openssl binary."
+      )
+      raise FileNotFoundError(f"openssl not found or not executable at {self._openssl_path}")
+
+  def _parse_object_storage_url(self, url):
+    """
+    Accept any endpoint host. Only require path format like:
+      /n/<namespace>/b/<bucket>
+      /n/<namespace>/b/<bucket>/o/<object>
+    """
+    parsed = urlparse(url)
+
+    if not parsed.scheme or not parsed.netloc:
+      raise ValueError(f"Invalid Object Storage URL: {url}")
+
+    parts = parsed.path.strip("/").split("/")
+
+    if len(parts) < 4 or parts[0] != "n" or parts[2] != "b":
+      raise ValueError(f"Invalid Object Storage path: {url}")
+
+    endpoint = f"{parsed.scheme}://{parsed.netloc}"
+    namespace = parts[1]
+    bucket_name = parts[3]
+    return endpoint, namespace, bucket_name
+
+  def build_bucket_url(self, base_url):
+    """
+    Build bucket-level URL for validation.
+    """
+    endpoint, namespace, bucket_name = self._parse_object_storage_url(base_url)
+    return f"{endpoint}/n/{namespace}/b/{bucket_name}"
+
+  def build_object_url(self, base_url, object_name):
+    """
+    Build object-level URL for upload.
+    """
+    endpoint, namespace, bucket_name = self._parse_object_storage_url(base_url)
+    encoded_object_name = quote(object_name, safe="/")
+    return f"{endpoint}/n/{namespace}/b/{bucket_name}/o/{encoded_object_name}"
+
+  def _sha256_base64_file(self, file_path):
+    """
+    Compute base64-encoded SHA256 of file content.
+    OCI expects this for PUT object uploads.
+    """
+    digest = hashlib.sha256()
+    with open(file_path, "rb") as fh:
+      for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+        digest.update(chunk)
+    return base64.b64encode(digest.digest()).decode("utf-8")
+
+  def _request_target(self, parsed_url):
+    """
+    Return path + query, which OCI expects in the signing string.
+    """
+    return parsed_url.path + (f"?{parsed_url.query}" if parsed_url.query else "")
+
+  def _sign_with_private_key(self, signing_string):
+    """
+    Sign the OCI canonical request string using the private key from config.
+    """
+    proc = subprocess.run(
+        [self._openssl_path, "dgst", "-sha256", "-sign", self._env.KEY_FILE],
+        input=signing_string.encode("utf-8"),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False
+    )
+
+    if proc.returncode != 0:
+      raise RuntimeError(
+          f"openssl signing failed: {proc.stderr.decode('utf-8', errors='replace').strip()}"
+      )
+
+    return base64.b64encode(proc.stdout).decode("utf-8")
+
+  def _build_signed_headers(self, method, url, body_file=None,
+                            content_type="application/octet-stream"):
+    """
+    Build OCI Signature auth headers.
+
+    For GET:
+      sign (request-target), host, x-date
+
+    For PUT:
+      also include content-type, content-length, x-content-sha256
+    """
+    parsed = urlparse(url)
+    x_date = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+    signed_header_names = ["(request-target)", "host", "x-date"]
+    signing_lines = [
+      f"(request-target): {method.lower()} {self._request_target(parsed)}",
+      f"host: {parsed.netloc}",
+      f"x-date: {x_date}",
+    ]
+
+    headers = {
+      "host": parsed.netloc,
+      "x-date": x_date,
+    }
+
+    if body_file:
+      content_length = str(os.path.getsize(body_file))
+      x_content_sha256 = self._sha256_base64_file(body_file)
+
+      signed_header_names.extend(["content-type", "content-length", "x-content-sha256"])
+      signing_lines.extend([
+        f"content-type: {content_type}",
+        f"content-length: {content_length}",
+        f"x-content-sha256: {x_content_sha256}",
+      ])
+
+      headers["content-type"] = content_type
+      headers["content-length"] = content_length
+      headers["x-content-sha256"] = x_content_sha256
+
+    signing_string = "\n".join(signing_lines)
+    signature = self._sign_with_private_key(signing_string)
+    key_id = f"{self._env.TENANCY}/{self._env.USER}/{self._env.FINGERPRINT}"
+
+    headers["Authorization"] = (
+        f'Signature version="1",'
+        f'keyId="{key_id}",'
+        f'algorithm="rsa-sha256",'
+        f'headers="{" ".join(signed_header_names)}",'
+        f'signature="{signature}"'
+    )
+
+    return headers
+
+  def _escape_curl_config_value(self, value):
+    """
+    Escape values before passing them to curl --config - through stdin.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+  def request(self, method, url, body_file=None,
+              content_type="application/octet-stream",
+              expected_status=(200,)):
+    """
+    Send signed request through curl.
+
+    Important:
+    - Authorization header is not passed in curl CLI args
+    - Headers go through curl --config - over stdin
+    """
+    headers = self._build_signed_headers(method, url, body_file, content_type)
+
+    cfg_lines = [
+        "silent",
+        "show-error",
+        f'request = "{method}"',
+        f'url = "{self._escape_curl_config_value(url)}"',
+    ]
+
+    if self._env.OCI_PROXY_HOST and self._env.OCI_PROXY_PORT:
+      proxy = f"{self._env.OCI_PROXY_HOST}:{self._env.OCI_PROXY_PORT}"
+      cfg_lines.append(f'proxy = "{self._escape_curl_config_value(proxy)}"')
+
+    for key, value in headers.items():
+      header_line = f"{key}: {value}"
+      cfg_lines.append(f'header = "{self._escape_curl_config_value(header_line)}"')
+
+    if body_file:
+      cfg_lines.append('header = "expect:"')
+      cfg_lines.append(f'upload-file = "{self._escape_curl_config_value(body_file)}"')
+
+    curl_cfg = "\n".join(cfg_lines) + "\n"
+
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+      response_file = tmp.name
+
+    try:
+      proc = subprocess.run(
+        ["curl", "--config", "-", "-o", response_file, "-w", "%{http_code}"],
+        input=curl_cfg,
+        universal_newlines=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False
+      )
+
+      if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip())
+
+      http_code_text = proc.stdout.strip()
+      if not http_code_text.isdigit():
+        raise RuntimeError(f"Unexpected curl status output: {http_code_text}")
+
+      status = int(http_code_text)
+
+      with open(response_file, "r", errors="replace") as fh:
+        response_body = fh.read()
+
+      if status not in expected_status:
+        raise RuntimeError(f"HTTP {status}: {response_body}")
+
+      return status, response_body
+
+    finally:
+      try:
+        os.remove(response_file)
+      except OSError:
+        pass
+
 class ConsoleLogger:
   """
   A class to send Python output simultaneously to the terminal and a log file.
@@ -137,14 +428,13 @@ class Environment:
   A class to load environment variables from a config file (tts-backup-env.txt) and expose them as attributes.
   """
 
-  def __init__(self, args, env_file: str):
+  def __init__(self, env_file: str):
     self.env_file = env_file
     self._env = ConfigParser()
     self._defaults = {}
 
     # Validate and load environment file
     self._validate_env_file()
-    self._load_arg_variables(args)
     self._load_env_variables()
     self._preprocess()
 
@@ -166,55 +456,30 @@ class Environment:
   
   def usage(self):
     print_stderr("=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=")
-    print_stderr("optional arguments allowed : --IGNORE_NON_FATAL_ERRORS, --JDK8_PATH")
-    print_stderr("runtime required inputs    : DBPASSWORD")
-    print_stderr("runtime optional inputs    : TDE_WALLET_STORE_PASSWORD, DVREALM_PASSWORD")
+    print_stderr("configuration file     : tts-backup-env.txt")
+    print_stderr("runtime required inputs: DBPASSWORD")
+    print_stderr("runtime optional inputs: TDE_WALLET_STORE_PASSWORD, DVREALM_PASSWORD")
     print_stderr("=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=")
-    print_stderr("Provide inputs during runtime manually - ")
-    print_stderr("        Usage: python3 " + sys.argv[0] + " [OPTIONS]")
-    print_stderr("        Example: python3 " + sys.argv[0] + " --IGNORE_NON_FATAL_ERRORS=<True/False> --JDK8_PATH=<path to jdk8> ")
+    print_stderr("Provide runtime inputs manually:")
+    print_stderr("        Usage: python3 " + sys.argv[0])
     print_stderr("")
-    print_stderr("Or provide inputs via standard input (e.g., for automation):")
+    print_stderr("Or provide runtime inputs via standard input, for automation:")
     print_stderr("        (TDE and DV applicable):")
-    print_stderr("        echo -e \"<DBPASSWORD>\\n<TDE_WALLET_STORE_PASSWORD>\\n<DVREALM_PASSWORD>\" | python3 " + sys.argv[0] + " [OPTIONS]")
+    print_stderr("        echo -e \"<DBPASSWORD>\\n<TDE_WALLET_STORE_PASSWORD>\\n<DVREALM_PASSWORD>\" | python3 " + sys.argv[0])
     print_stderr("        (TDE applicable, DV not applicable):")
-    print_stderr("        echo -e \"<DBPASSWORD>\\n<TDE_WALLET_STORE_PASSWORD>\" | python3 " + sys.argv[0] + " [OPTIONS]")
+    print_stderr("        echo -e \"<DBPASSWORD>\\n<TDE_WALLET_STORE_PASSWORD>\" | python3 " + sys.argv[0])
     print_stderr("        (TDE not applicable, DV applicable):")
-    print_stderr("        echo -e \"<DBPASSWORD>\\n\\n<DVREALM_PASSWORD>\" | python3 " + sys.argv[0] + " [OPTIONS]")
+    print_stderr("        echo -e \"<DBPASSWORD>\\n\\n<DVREALM_PASSWORD>\" | python3 " + sys.argv[0])
     print_stderr("        (TDE and DV not applicable):")
-    print_stderr("        echo -e \"<DBPASSWORD>\" | python3 " + sys.argv[0] + " [OPTIONS]")
+    print_stderr("        echo -e \"<DBPASSWORD>\" | python3 " + sys.argv[0])
     print_stderr("=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=")
-    print_stderr("        ARGUMENTS DESCRIPTION      ")
+    print_stderr("        CONFIGURATION INPUTS       ")
     print_stderr("=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=")
-    print_stderr("--IGNORE_NON_FATAL_ERRORS=<optional, provide if required to ignore schema bound object validation errors...>")
-    print_stderr("--JDK8_PATH=<optional, provide to use jdk8_path to download objstore bucket wallet...>")
+    print_stderr("Set optional inputs in tts-backup-env.txt:")
+    print_stderr("IGNORE_NON_FATAL_ERRORS=<TRUE/FALSE>")
+    print_stderr("JDK8_PATH=<optional path to JDK8 used to download objstore bucket wallet>")
     print_stderr("=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=")
     sys.exit(1)
-     
-  def _load_arg_variables(self, args):
-    """Load environment variables from the arguments provided and 
-       set them as class attributes."""
-    arg_dict = {}
-    arg_vars = ['IGNORE_NON_FATAL_ERRORS', 'JDK8_PATH']
-
-    # Populate arg_dict from given args
-    for arg in args:
-      if arg.startswith('--') and '=' in arg:
-        key, value = arg[2:].split('=', 1)
-        key = key.strip()
-        value = value.strip()
-        if key not in arg_vars:
-          print(f"Invalid argument key: {key}")
-          self.usage()
-        arg_dict[key] = value
-      else:
-        print(f"Invalid argument format: {arg}")
-        self.usage()
-
-    for key in arg_vars:
-      value = arg_dict.get(key)
-      setattr(self, key, value)
-
    
   def _load_env_variables(self):
     """Load environment variables from the config file and set them as class attributes."""
@@ -278,19 +543,31 @@ class Environment:
         setattr(self, key.upper(), value)
 
     # Load optional variables; set to empty if not found
-    optional_vars = ['SCHEMAS', 'TABLESPACES', 'OCI_INSTALLER_PATH',
-                     'OCI_PROXY_HOST', 'OCI_PROXY_PORT', 'CLUSTER_MODE',
+    optional_vars = ['SCHEMAS', 'TABLESPACES', 'EXCLUDE_TABLESPACES', 'EXCLUDE_SCHEMAS',
+                     'OCI_INSTALLER_PATH', 'OCI_PROXY_HOST', 'OCI_PROXY_PORT', 'CLUSTER_MODE',
                      'DRCC_REGION', 'DRY_RUN', 'EXCLUDE_TABLES', 'EXCLUDE_STATISTICS', 
                      'TRANSPORT_TABLES_PROTECTED_BY_REDACTION_POLICIES', 'TRANSPORT_TABLES_PROTECTED_BY_OLS_POLICIES',
                      'TRANSPORT_DB_PROTECTED_BY_DATABASE_VAULT','DVREALM_USER',
-                     'ZDM_BASED_TRANSPORT']
+                     'ZDM_BASED_TRANSPORT', 'IGNORE_NON_FATAL_ERRORS', 'JDK8_PATH']
     for var in optional_vars:
       value = self._defaults.get(var, '').strip()
-      if value and (var == 'TABLESPACES' or var == 'SCHEMAS'):
+      if value and var in ('TABLESPACES', 'SCHEMAS', 'EXCLUDE_TABLESPACES', 'EXCLUDE_SCHEMAS'):
         value = value.replace(" ", "")
-      if value and (var == 'EXCLUDE_TABLES'):
-        value = escape_dollar(value)
+      # if value and (var == 'EXCLUDE_TABLES'):
+        # value = escape_dollar(value)
       setattr(self, var, value)
+    
+    self.SCHEMAS, self.COMMON_USER_REMAP = _normalize_schema_input(self.SCHEMAS)
+
+    if self.TABLESPACES and self.EXCLUDE_TABLESPACES:
+      raise ValueError(
+        "TABLESPACES and EXCLUDE_TABLESPACES are mutually exclusive; specify only one."
+      )
+
+    if self.SCHEMAS and self.EXCLUDE_SCHEMAS:
+      raise ValueError(
+        "SCHEMAS and EXCLUDE_SCHEMAS are mutually exclusive; specify only one."
+      )
     
     if getattr(self, 'ZDM_BASED_TRANSPORT').strip():
       # Intialise Runtime Input vars... (ZDM Transport)
@@ -360,6 +637,15 @@ class Environment:
     setattr(self, 'TRANSPORT_DB_PROTECTED_BY_DATABASE_VAULT', getattr(self, 'TRANSPORT_DB_PROTECTED_BY_DATABASE_VAULT', 'FALSE') or 'FALSE')
     setattr(self, 'ZDM_BASED_TRANSPORT', getattr(self, 'ZDM_BASED_TRANSPORT', 'FALSE') or 'FALSE')
 
+    setattr(self, 'IGNORE_NON_FATAL_ERRORS', getattr(self, 'IGNORE_NON_FATAL_ERRORS', 'FALSE') or 'FALSE')
+    setattr(self, 'JDK8_PATH', getattr(self, 'JDK8_PATH', '') or '')
+
+    ignore_non_fatal_errors = self.IGNORE_NON_FATAL_ERRORS.strip().upper()
+    if ignore_non_fatal_errors not in ['TRUE', 'FALSE']:
+      print_stderr("IGNORE_NON_FATAL_ERRORS must be TRUE or FALSE.")
+      exit(1)
+    setattr(self, 'IGNORE_NON_FATAL_ERRORS', ignore_non_fatal_errors)
+
     final_backup = getattr(self, 'FINAL_BACKUP').strip().upper()
     if final_backup not in ['TRUE', 'FALSE']:
       raise ValueError(f"FINAL_BACKUP value should be one of ['TRUE' , 'FALSE' , 'true' , 'false'] but value is {final_backup}.")
@@ -407,6 +693,7 @@ class Environment:
     setattr(self, 'NEXT_SCN', 0)
     setattr(self, 'MAX_CHANNELS', 200)
     setattr(self, 'RMAN_LOGFILES', [])
+    setattr(self, 'DRY_RUN_ERRORS', [])
 
     # Create project manifest JSON file
     self._create_manifest_file()
@@ -424,6 +711,9 @@ class Environment:
       os.makedirs(f"{path}/datafile", exist_ok=True)
       os.makedirs(f"{path}/metadata", exist_ok=True)
 
+  def is_dry_run(self):
+    return getattr(self, 'DRY_RUN').strip().upper() == "TRUE"
+
   def _create_manifest_file(self):
     """Create or load the project manifest file."""
     
@@ -433,16 +723,22 @@ class Environment:
       os.makedirs(project_dir_path)
       print(f"Created project directory: {project_dir_path} \n")
 
-
-    # No need for manifest json in case of dry run
-    if getattr(self, 'DRY_RUN').strip().upper() == "TRUE":
-      print(f"DRY_RUN : Skipping Create/Load of project manifest file...\n")
-      return
-
     # Load project manifest JSON file and process it if already exists
     tts_project_file = os.path.join(project_dir_path, f"{getattr(self, 'PROJECT_NAME')}.json")
     setattr(self, 'TTS_PROJECT_FILE', tts_project_file)
 
+    # No need for manifest json in case of dry run
+    if self.is_dry_run():
+      if os.path.isfile(tts_project_file):
+        with open(tts_project_file, 'r') as f:
+          project_data = json.load(f)
+          setattr(self, 'BACKUP_LEVEL', normalize_backup_level(project_data.get('backup_level')))
+          setattr(self, 'INCR_SCN', project_data.get('incr_scn'))
+          setattr(self, 'level0_tablespaces', project_data.get('tablespaces', []))
+        print(f"DRY_RUN : Loaded existing project manifest file: {tts_project_file} \n")
+      else:
+        print("DRY_RUN : No existing project manifest found. Using level 0 dry run.\n")
+      return
 
     # Create a new manifest file if it doesn't exist
     if not os.path.isfile(tts_project_file):
@@ -458,7 +754,7 @@ class Environment:
       # Load existing backup level and incr_scn from the manifest file
       with open(tts_project_file, 'r') as f:
         project_data = json.load(f)
-        setattr(self, 'BACKUP_LEVEL', project_data.get('backup_level'))
+        setattr(self, 'BACKUP_LEVEL', normalize_backup_level(project_data.get('backup_level')))
         setattr(self, 'INCR_SCN', project_data.get('incr_scn'))
         setattr(self, 'level0_tablespaces', project_data.get('tablespaces'))
       print((f"Loaded existing project manifest file: {tts_project_file} \n"))
@@ -469,37 +765,53 @@ class Environment:
     # Create project directory based on backup level
     project_dir_path = getattr(self, 'PROJECT_DIR_PATH')
 
-    if getattr(self, 'DRY_RUN').strip().upper() == "TRUE":
+    if self.is_dry_run():
       tts_dir_path = os.path.join(project_dir_path, f"{getattr(self, 'PROJECT_NAME')}_LEVEL_{getattr(self, 'BACKUP_LEVEL')}_DRY_RUN")
+      log_file_path = os.path.join(project_dir_path, f"{getattr(self, 'PROJECT_NAME')}_LEVEL_{getattr(self, 'BACKUP_LEVEL')}_DRY_RUN.log")
+      
     else:
       tts_dir_path = os.path.join(project_dir_path, f"{getattr(self, 'PROJECT_NAME')}_LEVEL_{getattr(self, 'BACKUP_LEVEL')}")
+      log_file_path = os.path.join(project_dir_path, f"{getattr(self, 'PROJECT_NAME')}_LEVEL_{getattr(self, 'BACKUP_LEVEL')}.log")
 
     # Check if the directory exists
     if os.path.exists(tts_dir_path):
-      failed_dir = f"{tts_dir_path}_FAILED"
-      # Ensure the failed directory name is unique to avoid overwriting old failures
-      counter = 1
-      while os.path.exists(failed_dir):
-        failed_dir = f"{tts_dir_path}_FAILED_{counter}"
-        counter += 1
-      # Move the directory
-      shutil.move(tts_dir_path, failed_dir)
-      print(f"Moved existing failed directory '{tts_dir_path}' to '{failed_dir}'")
+      if self.is_dry_run():
+        old_dir = f"{tts_dir_path}_OLD"
+        counter = 1
+        while os.path.exists(old_dir):
+          old_dir = f"{tts_dir_path}_OLD_{counter}"
+          counter += 1
+        shutil.move(tts_dir_path, old_dir)
+        shutil.move(log_file_path, old_dir)
+        print(f"Moved existing dry-run directory '{tts_dir_path}' to '{old_dir}'")
+        print(f"Moved existing dry-run logfile '{log_file_path}' to '{old_dir}'")
+      else:
+        failed_dir = f"{tts_dir_path}_FAILED"
+        # Ensure the failed directory name is unique to avoid overwriting old failures
+        counter = 1
+        while os.path.exists(failed_dir):
+          failed_dir = f"{tts_dir_path}_FAILED_{counter}"
+          counter += 1
+        # Move the directory
+        shutil.move(tts_dir_path, failed_dir)
+        shutil.move(log_file_path, failed_dir)
+        print(f"Moved existing failed directory '{tts_dir_path}' to '{failed_dir}'")
+        print(f"Moved existing logfile '{log_file_path}' to '{failed_dir}'")
 
     # Create bundle file for transport of backup files
-    if getattr(self, 'DRY_RUN').strip().upper() == "TRUE":
+    if self.is_dry_run():
       bundle_file_name = f"{getattr(self, 'PROJECT_NAME')}_LEVEL_{getattr(self, 'BACKUP_LEVEL')}_DRY_RUN.tgz"
     else:
       bundle_file_name = f"{getattr(self, 'PROJECT_NAME')}_LEVEL_{getattr(self, 'BACKUP_LEVEL')}.tgz"
     tts_bundle_file = os.path.join(project_dir_path, bundle_file_name)
     if os.path.isfile(tts_bundle_file):
       now = subprocess.check_output("date +%d-%b-%Y_%H_%M_%S", shell=True).decode().strip()
-      if getattr(self, 'DRY_RUN').strip().upper() == "TRUE":
+      if self.is_dry_run():
         bundle_file_name = f"{getattr(self, 'PROJECT_NAME')}_LEVEL_{getattr(self, 'BACKUP_LEVEL')}_DRY_RUN_{now}.tgz"
       else:
         bundle_file_name = f"{getattr(self, 'PROJECT_NAME')}_LEVEL_{getattr(self, 'BACKUP_LEVEL')}_{now}.tgz"
       tts_bundle_file = os.path.join(os.path.dirname(tts_dir_path), bundle_file_name)
-      if getattr(self, 'DRY_RUN').strip().upper() == "TRUE":
+      if self.is_dry_run():
         tts_dir_path = os.path.join(project_dir_path, f"{getattr(self, 'PROJECT_NAME')}_LEVEL_{getattr(self, 'BACKUP_LEVEL')}_DRY_RUN_{now}")
       else:
         tts_dir_path = os.path.join(project_dir_path, f"{getattr(self, 'PROJECT_NAME')}_LEVEL_{getattr(self, 'BACKUP_LEVEL')}_{now}")
@@ -515,7 +827,7 @@ class Environment:
     """Set up log file"""
     project_dir_path = getattr(self, 'PROJECT_DIR_PATH')
 
-    if getattr(self, 'DRY_RUN').strip().upper() == "TRUE":
+    if self.is_dry_run():
       log_file_name = f"{getattr(self, 'PROJECT_NAME')}_LEVEL_{getattr(self, 'BACKUP_LEVEL')}_DRY_RUN.log"
     else:
       log_file_name = f"{getattr(self, 'PROJECT_NAME')}_LEVEL_{getattr(self, 'BACKUP_LEVEL')}.log"
@@ -533,6 +845,39 @@ class Environment:
     log_output = ConsoleLogger(log_file_path)
     sys.stdout = log_output
     sys.stderr = log_output
+
+    print(f"Overall TTS backup log file: {log_file_path}")
+
+  def add_dry_run_error(self, err_msg, log_file=None):
+    if not self.is_dry_run():
+      return
+
+    if log_file:
+      err_msg = f"{err_msg} Review: {log_file}"
+
+    if err_msg not in self.DRY_RUN_ERRORS:
+      self.DRY_RUN_ERRORS.append(err_msg)
+
+  def add_dry_run_log_errors(self, err_msg, log_file):
+    try:
+      with open(log_file, 'r') as file:
+        lines = [line.strip() for line in file.readlines() if line.strip()]
+    except FileNotFoundError:
+      lines = []
+    if lines:
+      err_msg = f"{err_msg}\n" + "\n".join([f"  {line}" for line in lines])
+    self.add_dry_run_error(err_msg, log_file)
+
+  def report_dry_run_result(self):
+    if len(self.DRY_RUN_ERRORS) == 0:
+      print("TTS BACKUP TOOL : Dry Run Completed Successfully...")
+      return 0
+
+    print("\nTTS BACKUP TOOL : Dry Run Failed.")
+    print("Dry Run validation errors:")
+    for index, err_msg in enumerate(self.DRY_RUN_ERRORS, 1):
+      print(f"{index}. {err_msg}")
+    return 1
 
 class SqlPlus:
   """
@@ -554,31 +899,34 @@ class SqlPlus:
     if not os.path.isfile(self.sqlplus_path):
       raise FileNotFoundError(f"SQL*Plus not found at {self.sqlplus_path}")
 
-  def run_sql(self, sql_script, log_file=None, dv_user=False):
-    """Build the SQL*Plus command string."""
+  def run_sql(self, sql_script, log_file=None, dv_user=False, append_log=False):
+    """Run SQL*Plus with SQL and credentials supplied through stdin."""
     if dv_user:
       conn_string = f"{self.dbuser}/{self.dbpassword}@{self.hostname}:{self.port}/{self.service_name}"
     else:
       conn_string = f"{self.dbuser}/{self.dbpassword}@{self.hostname}:{self.port}/{self.service_name} as SYSDBA"
-    
-
-    command = f'{self.orahome}/bin/sqlplus -s "{conn_string}" << EOF\n'
-    command += "whenever sqlerror exit 1;\n"
-    command += "set heading off\nset feedback off\nset pagesize 0\nset serveroutput on\n"
-
-    if log_file:
-      command += f"spool {log_file};\n"
 
     if not sql_script.strip():
       raise ValueError("Empty SQL query provided.")
-    command += sql_script
+
+    command = [self.sqlplus_path, "-s", "/nolog"]
+    sqlplus_input = "whenever oserror exit 1;\n"
+    sqlplus_input += "whenever sqlerror exit 1;\n"
+    sqlplus_input += f"connect {conn_string}\n"
+    sqlplus_input += "set heading off\nset feedback off\nset pagesize 0\nset serveroutput on\n"
+
+    if log_file:
+      spool_mode = "append" if append_log else ""
+      sqlplus_input += f"spool {log_file} {spool_mode};\n"
+
+    sqlplus_input += sql_script
     
     if log_file:
-      command += "\nspool off;"
-    command += "\nEOF"
+      sqlplus_input += "\nspool off;"
+    sqlplus_input += "\nexit;\n"
 
-    process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-    stdout, stderr = process.communicate()
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    stdout, stderr = process.communicate(sqlplus_input)
 
     # Check for ORA- errors even if returncode is 0
     failed = False
@@ -604,6 +952,8 @@ class TTS_SRC_RUN_VALIDATIONS:
   """
   def __init__(self, env):
     self._env = env
+    self._schemas_provided = bool(self._env.SCHEMAS.strip())
+    self._tablespaces_provided = bool(self._env.TABLESPACES.strip())
     self._sqlplus = SqlPlus(
         dbuser=self._env.DBUSER,
         dbpassword=self._env.DBPASSWORD,
@@ -614,59 +964,130 @@ class TTS_SRC_RUN_VALIDATIONS:
     )
     self.log_file = os.path.join(self._env.TTS_DIR_PATH, f"{self._env.PROJECT_NAME}_validate.log")
 
+  def _raise_or_record_validation_error(self, err_msg):
+    if self._env.is_dry_run():
+      print(err_msg)
+      self._env.add_dry_run_error(err_msg)
+    else:
+      raise ValueError(err_msg)
+
+  def _filter_excluded_values(self, values, exclude_csv, value_type):
+    exclude_set = {item.strip().upper() for item in exclude_csv.split(',') if item.strip()}
+    if not exclude_set:
+      return values
+
+    filtered_values = [value for value in values if value.strip().upper() not in exclude_set]
+
+    if values and not filtered_values:
+      raise ValueError(f"All discovered {value_type} were excluded. Please update EXCLUDE_{value_type.upper()}.")
+
+    return filtered_values
+
   def _get_tablespaces(self, template):
     """Return all tablespaces if not given"""
     if self._env.TABLESPACES:
       return self._env.TABLESPACES
 
-    print(f"Tablespaces not provided. Fetching all tablespaces...")
     try:
-      _log_file = os.path.join(self._env.TTS_DIR_PATH, f"{self._env.PROJECT_NAME}_get_tablespaces.log")
-      if not self._sqlplus.run_sql(template.get('get_tablespaces'), _log_file):
-        raise ValueError(f"Failed to fetch user tablespaces.")
+      if self._env.BACKUP_LEVEL != 0:
+        print(f"Tablespaces not provided. Fetching level-0 specified tablespaces...")  
+        tbs = [ts.strip().upper() for ts in self._env.level0_tablespaces if ts.strip()]
+      else:
+        print(f"Tablespaces not provided. Fetching all tablespaces...")
+        _log_file = os.path.join(self._env.TTS_DIR_PATH, f"{self._env.PROJECT_NAME}_get_tablespaces.log")
+        if not self._sqlplus.run_sql(template.get('get_tablespaces'), _log_file):
+          raise ValueError(f"Failed to fetch user tablespaces.")
+
+        # Read the log file to get the SQL*Plus output
+        with open(_log_file, "r") as file:
+          lines = file.readlines()
+          tbs = [line.strip().upper() for line in lines if line.strip()]
+      tbs = self._filter_excluded_values(tbs, self._env.EXCLUDE_TABLESPACES, "tablespaces")
+      self._env.TABLESPACES = ",".join(tbs)
+      return self._env.TABLESPACES
+    except Exception as e:
+      print(f"Error while fetching tablespaces : {e}")
+      raise
+  
+  def _get_xml_export_tables(self, template):
+
+    ts_list = split_into_lines(self._env.TABLESPACES)
+    sc_list = split_into_lines(self._env.SCHEMAS)
+
+    exc_tbl_list = split_into_lines(self._env.EXCLUDE_TABLES, False)
+    exc_tbl_filter = f"and t.table_name not in ({exc_tbl_list})" if exc_tbl_list.strip() else ""
+    exc_tbl_filter_seg = f"and c.table_name not in ({exc_tbl_list})" if exc_tbl_list.strip() else ""
+    exc_tbl_filter_t = f"and x.table_name not in ({exc_tbl_list})" if exc_tbl_list.strip() else ""
+    
+    Configuration.substitutions = {
+        'ts_list': ts_list.upper(),
+        'sc_list': sc_list.upper(),
+        'exc_tbl_filter': exc_tbl_filter,
+        'exc_tbl_filter_seg': exc_tbl_filter_seg,
+        'exc_tbl_filter_t': exc_tbl_filter_t
+    }
+
+    try:
+      _log_file = os.path.join(self._env.TTS_DIR_PATH, f"{self._env.PROJECT_NAME}_get_xml_export_tables.log")
+      if not self._sqlplus.run_sql(template.get('get_xml_export_tables'), _log_file):
+        raise ValueError(f"Failed to fetch xml tables.")
 
       # Read the log file to get the SQL*Plus output
       with open(_log_file, "r") as file:
         lines = file.readlines()
-        tbs = [line.strip().upper() for line in lines if line.strip()]
+        xml_export_tables = list(dict.fromkeys(line.strip() for line in lines if line.strip()))
+      self._env.xml_export_tables = ",".join(xml_export_tables)
       
-      self._env.TABLESPACES = ",".join(tbs)
-      return self._env.TABLESPACES
-
+      if(len(self._env.xml_export_tables)) > 0:
+        self._env.table_with_xml_type = 'true'
+      else:
+        self._env.table_with_xml_type = 'false'
+      return self._env.xml_export_tables
     except Exception as e:
-      print(f"Error while fetching tablespaces : {e}")
+      print(f"Error while fetching xml tables : {e}")
       raise
 
   def _get_schemas(self, template, user_type=None):
     """Return Local/Common users"""
-    if user_type == "local":
+    if user_type == "get_all_local_schemas":
       if self._env.DB_VERSION == '11g':
-        sql_script = template.get('get_local_schemas_dbversion_11g')
+        sql_script = template.get('get_all_local_schemas_dbversion_11g')
       else: 
-        sql_script = template.get('get_local_schemas')
-    elif user_type == "common":
+        sql_script = template.get('get_all_local_schemas')
+    elif user_type == "get_common_schemas":
       if self._env.DB_VERSION == '11g':
         sql_script = template.get('get_common_schemas_dbversion_11g')
       else: 
         sql_script = template.get('get_common_schemas')
-    elif user_type == "required":
+    elif user_type == "get_required_local_schemas":
       ts_list = split_into_lines(self._env.TABLESPACES)
       if self._env.DB_VERSION == '11g':
         l_user_list_clause = "username not in ('SYS','SYSTEM')"
       else:
-        l_user_list_clause = "username not in ('SYS','SYSTEM') and common='NO'"
+        l_user_list_clause = "username not in ('SYS','SYSTEM') and common='NO' and oracle_maintained='N'"
       Configuration.substitutions = {
         'ts_list': ts_list.upper(),
         'l_user_list_clause': l_user_list_clause,
       }
-      if not self._env.SCHEMAS:
-        sql_script = template.get('owners_and_grantee_in_tablespaces')
-      else:
-        sql_script = template.get('owners_in_tablespaces')
+      sql_script = template.get('get_required_local_schemas')
+    elif user_type == "get_tablespace_owners":
+      ts_list = split_into_lines(self._env.TABLESPACES)
+      exc_tbl_list = split_into_lines(self._env.EXCLUDE_TABLES, False)
+      exc_tbl_filter = f"and segment_name not in ({exc_tbl_list}) "  if exc_tbl_list.strip() else ""
+
+      Configuration.substitutions = {
+        'ts_list': ts_list.upper(),
+        'exc_tbl_filter': exc_tbl_filter,
+      }
+      sql_script = template.get('get_tablespace_owners')
     else:
       if not self._env.SCHEMAS:
-        print("No schemas provided. Returning a list of required users.")
-        self._env.SCHEMAS = self._get_schemas(template, "required")
+        if not self._tablespaces_provided:
+          print("No schemas/tablespaces provided. Returning a list of all schemas.")
+          self._env.SCHEMAS = self._get_schemas(template, "get_all_local_schemas")
+        else:
+          print("No schemas provided. Returning a list of required local schemas for the provided tablespace list.")
+          self._env.SCHEMAS = self._get_schemas(template, "get_required_local_schemas")
       return self._env.SCHEMAS
     
     print(f"Fetching {user_type} users...")
@@ -680,6 +1101,9 @@ class TTS_SRC_RUN_VALIDATIONS:
         lines = file.readlines()
         users = [line.strip().upper() for line in lines if line.strip()]
       
+      if user_type in ("get_all_local_schemas", "get_required_local_schemas", "get_tablespace_owners"):
+        users = self._filter_excluded_values(users, self._env.EXCLUDE_SCHEMAS, "schemas")
+
       return ",".join(users)
     except Exception as e:
       print(f"Error while fetching {user_type} users: {e}")
@@ -689,48 +1113,115 @@ class TTS_SRC_RUN_VALIDATIONS:
     """Validate schemas"""
     print("Validating schemas...")
     # Validate schemas for common users
-    common_users = self._get_schemas(template, "common")
-    required_schemas = self._get_schemas(template, "required")
+    common_users = self._get_schemas(template, "get_common_schemas")
+    tbs_owners = self._get_schemas(template, "get_tablespace_owners")
     
-    sc_list = split_into_lines(self._env.SCHEMAS)
-
-    exc_tbl_list = split_into_lines(self._env.EXCLUDE_TABLES, False)
-
-    exc_tbl_filter = f"and table_name not in ({exc_tbl_list})" if exc_tbl_list.strip() else ""
-
+    sc_list = [s.strip().upper() for s in self._env.SCHEMAS.split(',') if s.strip()]
+    common_user_remap = _parse_common_user_remap(self._env.COMMON_USER_REMAP)
+    
+    common_user_list = [u.strip().upper() for u in common_users.split(',') if u.strip()]
+    tbs_owner_list = [s.strip().upper() for s in tbs_owners.split(',') if s.strip()]
+    
     _log_file = os.path.join(self._env.TTS_DIR_PATH, f"{self._env.PROJECT_NAME}_schema_validations.log")
-    for schema in self._env.SCHEMAS.split(','):
+    if os.path.isfile(_log_file):
+      os.remove(_log_file)
+
+    def run_schema_validation(schema, template_name, err_msg):
+      exc_tbl_list = split_into_lines(self._env.EXCLUDE_TABLES, False)
+      exc_tbl_filter_t = f"and t.table_name not in ({exc_tbl_list})" if exc_tbl_list.strip() else ""
+
       Configuration.substitutions = {
-        'schema': schema.upper(),
-        'exc_tbl_filter': exc_tbl_filter,
-        'dry_run': self._env.DRY_RUN.strip().upper(),
+        'schema': schema,
+        'ts_list': split_into_lines(self._env.TABLESPACES).upper(),
+        'dry_run': self._env.is_dry_run(),
+        'exc_tbl_filter_t': exc_tbl_filter_t,
       }
-      if schema.upper() in common_users.split(','):
-        err_msg = f"Schema validation failed: {schema} is a common user. Common users are not allowed to transport."
-        if self._env.DRY_RUN.strip().upper() == "TRUE":
-          print(err_msg)
-        else:
-          raise ValueError(err_msg)
-      if not self._sqlplus.run_sql(template.get('validate_schemas'), _log_file):
-        print(f"Schema {schema.upper()} validations failed. \n")
+
+      if not self._sqlplus.run_sql(template.get(template_name), _log_file, append_log=True):
+        print(f"{err_msg}\n")
+        if self._env.is_dry_run():
+          self._env.add_dry_run_log_errors(err_msg, _log_file)
+          return
         self._print_log_and_exit(_log_file)
 
+    for schema in sc_list:
+      if schema in common_user_list:
+        self._raise_or_record_validation_error(
+          f"Schema validation failed: {schema} is a common or Oracle-maintained user and "
+          "cannot be listed directly in SCHEMAS. SCHEMAS must contain only local schemas. "
+          f"If {schema} owns physical data in selected TABLESPACES [{self._env.TABLESPACES}], "
+          f"provide a remap entry '{schema}:<LOCAL_TARGET_SCHEMA>' so the transported "
+          "physical data is imported into a local target schema."
+        )
+        continue
+
+      run_schema_validation(
+        schema,
+        'validate_schemas',
+        f"Schema {schema} validations failed."
+      )
+
+    for source, target in common_user_remap.items():
+      source_valid_for_sql_check = True
+
+      if source not in common_user_list:
+        source_valid_for_sql_check = False
+        self._raise_or_record_validation_error(
+          f"Invalid common-user remap '{source}:{target}': source schema {source} is not "
+          "a common or Oracle-maintained user. Common-user remap is only for supported "
+          "common or Oracle-maintained source users. Remove this remap and list the schema "
+          "in SCHEMAS if it is a required local schema."
+        )
+
+      if source not in tbs_owner_list:
+        source_valid_for_sql_check = False
+        self._raise_or_record_validation_error(
+          f"Invalid common-user remap '{source}:{target}': source schema {source} does not "
+          f"own physical data in selected TABLESPACES [{self._env.TABLESPACES}]. No data "
+          "will be transported for this source, so this remap is not required. Remove this "
+          "remap entry."
+        )
+
+      if target in common_user_list:
+        self._raise_or_record_validation_error(
+          f"Invalid common-user remap '{source}:{target}': target schema {target} is common "
+          "or Oracle-maintained. The target must be a local, non-Oracle-maintained schema "
+          "name because transported physical data cannot be remapped back into a common "
+          "or Oracle-maintained user."
+        )
+
+      if source_valid_for_sql_check:
+        run_schema_validation(
+          source,
+          'validate_common_user_remap_source',
+          f"Common-user remap source {source} validations failed."
+        )
+
     if os.path.isfile(_log_file) and os.path.getsize(_log_file) > 0:
+      self._env.add_dry_run_log_errors("Schema validations failed.", _log_file)
       self._print_log_and_exit(_log_file, 0)
 
-    for schema in required_schemas.split(','):
-      if schema.upper() in common_users.split(','):
-        err_msg = f"Schema validation failed: {schema} is a required schema to transport and is a common user. Common users are not allowed to transport. Please update TABLESPACES list in the env."
-        if self._env.DRY_RUN.strip().upper() == "TRUE":
-          print(err_msg)
-        else:
-          raise ValueError(err_msg)
-      if schema.upper() not in sc_list:
-        err_msg = f"Schema validation failed: {schema} is a required schema to transport."
-        if self._env.DRY_RUN.strip().upper() == "TRUE":
-          print(err_msg)
-        else:
-          raise ValueError(err_msg)
+    for schema in tbs_owner_list:
+      if schema in common_user_list:
+        if schema in common_user_remap:
+          continue
+
+        self._raise_or_record_validation_error(
+          f"Schema validation failed: {schema} owns physical data in selected TABLESPACES "
+          f"[{self._env.TABLESPACES}] and is a common or Oracle-maintained user. Common "
+          "or Oracle-maintained users are not exported/imported as schemas. Provide "
+          f"'{schema}:<LOCAL_TARGET_SCHEMA>' so only the transported physical data is "
+          "imported into a local target schema."
+        )
+        continue
+
+      if schema not in sc_list:
+        self._raise_or_record_validation_error(
+          f"Schema validation failed: {schema} owns physical data in selected TABLESPACES "
+          f"[{self._env.TABLESPACES}], but it is not included in SCHEMAS [{self._env.SCHEMAS}]. "
+          "Add this schema to SCHEMAS, or remove/exclude its physical objects from the "
+          "selected tablespaces."
+        )
   
   def _validate_tablespaces(self, template):
     """Tablespace validation"""
@@ -747,17 +1238,15 @@ class TTS_SRC_RUN_VALIDATIONS:
 
     exc_tbl_list = split_into_lines(self._env.EXCLUDE_TABLES, False)
 
-    print("Finding plsql objects that are not transported due to owner not in transport list")
-    self._run_object_validation(template, ts_list, sc_list)
-
     Configuration.substitutions = {
       'ts_list': ts_list.upper(),
       'final_backup': self._env.FINAL_BACKUP.upper(),
     }
 
     if not self._sqlplus.run_sql(template.get('purge_dba_recyclebin')):
-      print(f"Validation failed: Found BIN$ objects in one or more tablespaces from tbs list..\n")
-      print(f"'Please purge dba_recyclebin to avoid move failures at ADBS'")
+      err_msg = "Validation failed: Found BIN$ objects in one or more tablespaces from tbs list. Please purge dba_recyclebin to avoid move failures at ADBS."
+      print(f"{err_msg}\n")
+      self._env.add_dry_run_error(err_msg)
     
     for tablespace in ts_array:
       tablespace = tablespace.strip().upper()
@@ -765,26 +1254,37 @@ class TTS_SRC_RUN_VALIDATIONS:
       self._run_tablespace_validation_script(template, tablespace, sc_list, exc_tbl_list)
       if os.path.isfile(self.log_file) and os.path.getsize(self.log_file) > 0:
         print(f"Tablespace validations failed.")
+        self._env.add_dry_run_log_errors(f"Tablespace {tablespace} validations failed.", self.log_file)
         self._print_log_and_exit(self.log_file, 0)
 
-    if self._env.DB_VERSION == '11g':
+    if self._env.is_dry_run() or self._env.BACKUP_LEVEL == 0 or self._env.DB_VERSION == '11g':
       ts_list = "'{}'".format(",".join(self._env.TABLESPACES.split(',')))
       Configuration.substitutions = {
-        'ts_list': ts_list
+        'ts_list': ts_list,
+        'dry_run': self._env.is_dry_run(),
       }
-      if not self._sqlplus.run_sql(template.get('validate_tablespaces_dbversion_11g'), f"{self.log_file} append"):
+      print(f"Running DBMS_TTS.TRANSPORT_SET_CHECK for tablespaces: {self._env.TABLESPACES}")
+      if not self._sqlplus.run_sql(template.get('tts_transport_set_check'), f"{self.log_file} append"):
         print(f"Tablespace validations failed. Please review {self.log_file} for details\n")
-        self._print_log_and_exit(self.log_file)
+        if self._env.is_dry_run():
+          self._env.add_dry_run_log_errors("Tablespace validations failed.", self.log_file)
+          self._print_log_and_exit(self.log_file, 0)
+        else:
+          self._print_log_and_exit(self.log_file)
       if os.path.isfile(self.log_file) and os.path.getsize(self.log_file) > 0:
         print(f"Tablespace validations failed.")
+        self._env.add_dry_run_log_errors("Tablespace validations failed.", self.log_file)
         self._print_log_and_exit(self.log_file, 0)
 
-  def _run_object_validation(self, template, ts_list, sc_list):
+    print("Finding plsql objects that are not transported due to owner not in transported schema_list")
+    self._run_logical_object_validation(template, ts_list, sc_list)
+
+  def _run_logical_object_validation(self, template, ts_list, sc_list):
     """Run SQL object validation for all tablespaces."""
     if self._env.DB_VERSION == '11g':
-      l_user_list_clause = "and username not in ('SYS','SYSTEM')"
+      l_user_list_clause = "username not in ('SYS','SYSTEM')"
     else:
-      l_user_list_clause = "and username not in ('SYS','SYSTEM') and common='NO'"
+      l_user_list_clause = "username not in ('SYS','SYSTEM') and common='NO' and oracle_maintained='N'"
 
     Configuration.substitutions = {
         'sc_list': sc_list.upper(),
@@ -792,17 +1292,21 @@ class TTS_SRC_RUN_VALIDATIONS:
         'l_user_list_clause': l_user_list_clause,
       }
       
-    if self._env.DRY_RUN.strip().upper() == "TRUE":
-      _log_file = os.path.join(self._env.PROJECT_DIR_PATH, f"{self._env.PROJECT_NAME}_LEVEL_{self._env.BACKUP_LEVEL}_dry_run_object_validations.log")
+    if self._env.is_dry_run():
+      _log_file = os.path.join(self._env.PROJECT_DIR_PATH, f"{self._env.PROJECT_NAME}_LEVEL_{self._env.BACKUP_LEVEL}_dry_run_logical_object_validations.log")
     else:
       _log_file = os.path.join(self._env.PROJECT_DIR_PATH, f"{self._env.PROJECT_NAME}_LEVEL_{self._env.BACKUP_LEVEL}_object_validations.log")
     
-    if not self._sqlplus.run_sql(template.get('object_validation'), _log_file):
-      print(f"\n Object validations failed. Please review:")
+    if not self._sqlplus.run_sql(template.get('logical_object_validation'), _log_file):
+      print(f"\n Logical Object validations failed. Please review:")
       print(f"{_log_file}\n")
-      raise RuntimeError(f"Failed to run object validations on tablespaces.")
+      if self._env.is_dry_run():
+        self._env.add_dry_run_log_errors("Failed to run logical object validations on tablespaces.", _log_file)
+        return
+      else:
+        raise RuntimeError(f"Failed to run logical object validations on tablespaces.")
 
-    print(f"Object validations complete.\n")
+    print(f"Logical Object validations complete.\n")
 
     if os.path.isfile(_log_file) and os.path.getsize(_log_file) > 0:
       print(f" Please review: {_log_file}\n")
@@ -810,10 +1314,11 @@ class TTS_SRC_RUN_VALIDATIONS:
       if self._env.IGNORE_NON_FATAL_ERRORS and self._env.IGNORE_NON_FATAL_ERRORS.upper() == 'TRUE':
         print("Errors Ignored proceeding...\n")
       else:
-        print("Please run with option --IGNORE_NON_FATAL_ERRORS=TRUE to ignore non fatal errors...\n")
-        print("IGNORE_NON_FATAL_ERRORS option not provided, exiting...")
+        print("Set IGNORE_NON_FATAL_ERRORS=TRUE in tts-backup-env.txt to ignore non fatal errors...\n")
+        print("IGNORE_NON_FATAL_ERRORS is not TRUE, exiting...")
         print(f" Review: {_log_file}\n")
-        if self._env.DRY_RUN.strip().upper() == "FALSE":
+        self._env.add_dry_run_error("Logical Object validations found, database objects that will NOT be transported :", _log_file)
+        if not self._env.is_dry_run():
           sys.exit(1)
   
   def _validate_tablespaces_list(self):
@@ -838,23 +1343,23 @@ class TTS_SRC_RUN_VALIDATIONS:
 
   def _run_tablespace_validation_script(self, template, tablespace, sc_list, exc_tbl_list):
     """Run SQL validation for a single tablespace."""
-    exc_tbl_filter = f"and t.table_name not in ({exc_tbl_list})" if exc_tbl_list.strip() else ""
-    exc_tbl_filter_seg = f"and c.table_name not in ({exc_tbl_list})" if exc_tbl_list.strip() else ""
     exc_tbl_filter_dt = f"and atc.table_name not in ({exc_tbl_list})" if exc_tbl_list.strip() else ""
 
     Configuration.substitutions = {
         'tablespace': tablespace.upper(),
         'final_backup': self._env.FINAL_BACKUP.upper(),
         'sc_list': sc_list.upper(),
-        'exc_tbl_filter': exc_tbl_filter,
-        'exc_tbl_filter_seg': exc_tbl_filter_seg,
         'exc_tbl_filter_dt': exc_tbl_filter_dt,
-        'dry_run': self._env.DRY_RUN.strip().upper(),
+        'dry_run': self._env.is_dry_run(),
       }
     
     if not self._sqlplus.run_sql(template.get('validate_tablespaces'), self.log_file):
       print(f"Tablespace {tablespace} validations failed. \n")
-      self._print_log_and_exit(self.log_file, 0 if self._env.DRY_RUN.strip().upper() == "TRUE" else 1)
+      if self._env.is_dry_run():
+        self._env.add_dry_run_log_errors(f"Tablespace {tablespace} validations failed.", self.log_file)
+        self._print_log_and_exit(self.log_file, 0)
+      else:
+        self._print_log_and_exit(self.log_file)
     
   def _validate_tablespace_count(self, ts_list, ts_count):  
     """Validate that the number of tablespaces does not exceed limits."""
@@ -873,9 +1378,11 @@ class TTS_SRC_RUN_VALIDATIONS:
       # 30 - 7 (default) = 23
       ts_limit = 23
     if ts_count > ts_limit:
+      err_msg = f"ERROR : Total number of specified tablespaces are : {ts_count}. Max allowed tablespace count of 30 will be exceeded in ADWCS."
       print(f"Tablespaces count validation failed. \n")
-      print(f"ERROR : Total number of specified tablespaces are : {ts_count}. Max allowed tablespace count of 30 will be exceeded in ADWCS.")
-      if self._env.DRY_RUN.strip().upper() == "FALSE":
+      print(err_msg)
+      self._env.add_dry_run_error(err_msg)
+      if not self._env.is_dry_run():
         exit(1)
   
   def _validate_redaction_policies(self, template):
@@ -890,15 +1397,22 @@ class TTS_SRC_RUN_VALIDATIONS:
     log_file = os.path.join(self._env.TTS_DIR_PATH, f"{self._env.PROJECT_NAME}_redaction.log")
     if not self._sqlplus.run_sql(template.get('validate_redaction_policies'), log_file):
       print("Redaction Policies validation failed. \n")
-      self._print_log_and_exit(log_file)
+      if self._env.is_dry_run():
+        self._env.add_dry_run_log_errors("Redaction Policies validation failed.", log_file)
+        self._print_log_and_exit(log_file, 0)
+        return ''
+      else:
+        self._print_log_and_exit(log_file)
 
     with open(log_file, 'r') as log:
       redaction_pls = log.read().strip()
     
     if redaction_pls and self._env.TRANSPORT_TABLES_PROTECTED_BY_REDACTION_POLICIES.upper() == "FALSE":
       print("Redaction Policies found in the database. You have to create the redaction policies in ADB-S database. Redacted data will be unprotected in ADB-S database otherwise. \n")
-      print(f"[ERROR] Please provide consent to transport tables protected by redaction policies by specifying TRANSPORT_TABLES_PROTECTED_BY_REDACTION_POLICIES=TRUE. Redaction policies found are : {redaction_pls}")
-      if self._env.DRY_RUN.strip().upper() == "FALSE":
+      err_msg = f"[ERROR] Please provide consent to transport tables protected by redaction policies by specifying TRANSPORT_TABLES_PROTECTED_BY_REDACTION_POLICIES=TRUE. Redaction policies found are : {redaction_pls}"
+      print(err_msg)
+      self._env.add_dry_run_error(err_msg)
+      if not self._env.is_dry_run():
         exit(1)
     return redaction_pls
 
@@ -914,15 +1428,22 @@ class TTS_SRC_RUN_VALIDATIONS:
     log_file = os.path.join(self._env.TTS_DIR_PATH, f"{self._env.PROJECT_NAME}_ols.log")
     if not self._sqlplus.run_sql(template.get('validate_ols_policies'), log_file):
       print("OLS Policies validation failed. \n")
-      self._print_log_and_exit(log_file)
+      if self._env.is_dry_run():
+        self._env.add_dry_run_log_errors("OLS Policies validation failed.", log_file)
+        self._print_log_and_exit(log_file, 0)
+        return ''
+      else:
+        self._print_log_and_exit(log_file)
     
     with open(log_file, 'r') as log:
       ols_pls = log.read().strip()
     
     if ols_pls and self._env.TRANSPORT_TABLES_PROTECTED_BY_OLS_POLICIES.upper() == "FALSE":
       print("OLS Policies found in the database. You have to create the OLS policies in ADB-S database. Data protected by OLS will be unprotected in ADB-S otherwise.\n")
-      print(f"[ERROR] Please provide consent to transport tables protected by OLS policies by specifying TRANSPORT_TABLES_PROTECTED_BY_OLS_POLICIES=TRUE. OLS policies found are : {ols_pls}")
-      if self._env.DRY_RUN.strip().upper() == "FALSE":
+      err_msg = f"[ERROR] Please provide consent to transport tables protected by OLS policies by specifying TRANSPORT_TABLES_PROTECTED_BY_OLS_POLICIES=TRUE. OLS policies found are : {ols_pls}"
+      print(err_msg)
+      self._env.add_dry_run_error(err_msg)
+      if not self._env.is_dry_run():
         exit(1)
 
     return ols_pls
@@ -934,22 +1455,34 @@ class TTS_SRC_RUN_VALIDATIONS:
     log_file = os.path.join(self._env.TTS_DIR_PATH, f"{self._env.PROJECT_NAME}_dvops.log")
     if not self._sqlplus.run_sql(template.get('validate_dvops_protection'), log_file):
       print("Database Vault protection check failed. \n")
-      self._print_log_and_exit(log_file)
+      if self._env.is_dry_run():
+        self._env.add_dry_run_log_errors("Database Vault protection check failed.", log_file)
+        self._print_log_and_exit(log_file, 0)
+        return
+      else:
+        self._print_log_and_exit(log_file)
 
     with open(log_file, 'r') as log:
       dvops_cnt = log.read().strip()
 
     if int(dvops_cnt) > 0 and self._env.TRANSPORT_DB_PROTECTED_BY_DATABASE_VAULT.upper() == "FALSE":
       print("Database Vault protection is enabled in the database. You have to re-enable database vault protection on the ADB-S database. Transported data will be unprotected otherwise \n")
-      print("[ERROR] Please provide consent to transport Database Vault protected database by specifying TRANSPORT_DB_PROTECTED_BY_DATABASE_VAULT=TRUE.")
-      if self._env.DRY_RUN.strip().upper() == "FALSE":
+      err_msg = "[ERROR] Please provide consent to transport Database Vault protected database by specifying TRANSPORT_DB_PROTECTED_BY_DATABASE_VAULT=TRUE."
+      print(err_msg)
+      self._env.add_dry_run_error(err_msg)
+      if not self._env.is_dry_run():
         exit(1)
 
     print("Checking Database Vault realms...")
     log_file = os.path.join(self._env.TTS_DIR_PATH, f"{self._env.PROJECT_NAME}_dvrealm.log")
     if not self._sqlplus.run_sql(template.get('validate_dvrealm_policies'), log_file):
       print("Unable to check Database Vault realms. \n")
-      self._print_log_and_exit(log_file)
+      if self._env.is_dry_run():
+        self._env.add_dry_run_log_errors("Unable to check Database Vault realms.", log_file)
+        self._print_log_and_exit(log_file, 0)
+        return
+      else:
+        self._print_log_and_exit(log_file)
 
     with open(log_file, 'r') as log:
       dvrealm_output = log.read().strip()
@@ -958,8 +1491,10 @@ class TTS_SRC_RUN_VALIDATIONS:
     is_dv_enabled = all(int(x) > 0 for x in dvrealm_array[:3])
     if is_dv_enabled: 
       if not self._env.DVREALM_USER.strip() or not self._env.DVREALM_PASSWORD.strip():
-        print("[ERROR] Database Vault is enabled in the database. Please provide inputs for DVREALM_USER and DVREALM_PASSWORD.")
-        if self._env.DRY_RUN.strip().upper() == "FALSE":
+        err_msg = "[ERROR] Database Vault is enabled in the database. Please provide inputs for DVREALM_USER and DVREALM_PASSWORD."
+        print(err_msg)
+        self._env.add_dry_run_error(err_msg)
+        if not self._env.is_dry_run():
           exit(1)
 
    
@@ -975,15 +1510,22 @@ class TTS_SRC_RUN_VALIDATIONS:
       log_file = os.path.join(self._env.TTS_DIR_PATH, f"{self._env.PROJECT_NAME}_dvschemas.log")
       if not sqlplus.run_sql(template.get('get_dv_protected_schemas'), log_file, True):
         print("Unable to check schemas protected by Database Vault realms \n")
-        self._print_log_and_exit(log_file)
+        if self._env.is_dry_run():
+          self._env.add_dry_run_log_errors("Unable to check schemas protected by Database Vault realms.", log_file)
+          self._print_log_and_exit(log_file, 0)
+          return
+        else:
+          self._print_log_and_exit(log_file)
       
       with open(log_file, 'r') as log:
         dvschemas_output = log.read().strip()
 
       print(dvschemas_output)
       if int(dvschemas_output) == 0:
-        print("[ERROR]Please authorize sys as an Data Pump user to transport the Database Vault protected schemas and retry the export\n")
-        if self._env.DRY_RUN.strip().upper() == "FALSE":
+        err_msg = "[ERROR]Please authorize sys as an Data Pump user to transport the Database Vault protected schemas and retry the export"
+        print(f"{err_msg}\n")
+        self._env.add_dry_run_error(err_msg)
+        if not self._env.is_dry_run():
           exit(1)
   
   def _print_log_and_exit(self, _log_file, _exit=1):
@@ -1000,43 +1542,60 @@ class TTS_SRC_CHECK_STORAGE_BUCKETS:
   """
   def __init__(self, env):
     self._env = env
+    self._oci_curl = OCI_CURL_SIGNER(env)
     self.tts_src_check_storage_buckets()
 
   def _validate_bucket(self, url):
     """
-    Helper function to check if a storage bucket exists.
+    Validate bucket by sending a signed GET request.
     """
-    # Parse the URL
-    parsed_url = urlparse(url)
-    # Extract the region from the netloc (example: objectstorage.us-ashburn-1.oraclecloud)
-    region = parsed_url.netloc.split('.')[1]
-    # Extract the namespace from the path (after "/n/")
-    namespace = parsed_url.path.split('/')[2]
-    # Extract the bucket name from the path (after "/b/")
-    bucket_name = parsed_url.path.split('/')[4]
-    
-    config = oci.config.from_file(self._env.CONFIG_FILE, "DEFAULT")
-    config['region'] = region
     try:
+      bucket_url = self._oci_curl.build_bucket_url(url)
       print(f"Validating storage bucket at URL: {url}...")
-      
-      object_storage_client = oci.object_storage.ObjectStorageClient(config=config,
-                                service_endpoint=url.split('/n')[0])
-      if self._env.OCI_PROXY_HOST and self._env.OCI_PROXY_PORT:
-        proxy_url = f"{self._env.OCI_PROXY_HOST}:{self._env.OCI_PROXY_PORT}"
-        object_storage_client.base_client.session.proxies = {'https': proxy_url}
 
-      response =  object_storage_client.get_bucket(namespace_name=namespace, bucket_name=bucket_name)
-      if response.status != 200:
-        raise ValueError(f"Failed to validate URI {url}. HTTP Status Code: {response.status} \n")
+      self._oci_curl.request(
+          method="GET",
+          url=bucket_url,
+          expected_status=(200,)
+      )
+
       print(f"Successfully validated URI {url}.")
     except Exception as e:
-      print(f"Error occurred while checking the bucket {url}: {str(e)}\n")
+      err_msg = f"Error occurred while checking the bucket {url}: {str(e)}"
+      print(f"{err_msg}\n")
       print("Check if the storage bucket exists and credentials are correct. \n")
-      sys.exit(1) 
+      self._env.add_dry_run_error(f"{err_msg}. Check if the storage bucket exists and credentials are correct.")
+      if not self._env.is_dry_run():
+        sys.exit(1)
+
+  def _validate_distinct_bucket_urls(self):
+    """
+    Validate that backup and bundle buckets are not the same bucket URL.
+    """
+    try:
+      backup_bucket_url = self._oci_curl.build_bucket_url(self._env.TTS_BACKUP_URL)
+      bundle_bucket_url = self._oci_curl.build_bucket_url(self._env.TTS_BUNDLE_URL)
+    except Exception as e:
+      err_msg = f"Error occurred while validating storage bucket URLs: {str(e)}"
+      print(f"{err_msg}\n")
+      self._env.add_dry_run_error(err_msg)
+      if not self._env.is_dry_run():
+        sys.exit(1)
+      return
+
+    if backup_bucket_url == bundle_bucket_url:
+      err_msg = "TTS_BACKUP_URL and TTS_BUNDLE_URL must point to different storage buckets."
+      print(f"{err_msg}\n")
+      print(f"TTS_BACKUP_URL: {self._env.TTS_BACKUP_URL}")
+      print(f"TTS_BUNDLE_URL: {self._env.TTS_BUNDLE_URL}")
+      self._env.add_dry_run_error(err_msg)
+      if not self._env.is_dry_run():
+        sys.exit(1)
 
   def tts_src_check_storage_buckets(self):
     """Function to check both backup and bundle storage buckets."""
+    self._validate_distinct_bucket_urls()
+
     print("** Checking backup storage bucket... **")
     self._validate_bucket(self._env.TTS_BACKUP_URL)
 
@@ -1066,13 +1625,13 @@ class TTS_SRC_CREATE_WALLET:
     java_path = os.path.join(self._env.ORAHOME, 'jdk', 'bin', 'java')
     # First attempt to run the Java command
     if not self.run_java_oci_installer(java_path):
-      # If the first attempt fails, run with user provided jdk8 path and try again
+      # If the first attempt fails, retry with configured JDK8_PATH
       if self._env.JDK8_PATH:
         print("Running with provided JDK8_PATH...")
         jdk8_path = self._env.JDK8_PATH
       else:
-        print("\n Please run with option --JDK8_PATH=/path-to-jdk8 to retry with jdk8...\n")
-        print("JDK8_PATH option not provided, exiting...")
+        print("\nSet JDK8_PATH=/path-to-jdk8 in tts-backup-env.txt to retry with jdk8...\n")
+        print("JDK8_PATH not configured, exiting...")
         sys.exit(1)
 
       java_path = os.path.join(jdk8_path, 'bin', 'java')
@@ -1169,8 +1728,6 @@ class TTS_SRC_GATHER_DATA:
 
       ts_list = split_into_lines(self._env.TABLESPACES)
       sc_list = split_into_lines(self._env.SCHEMAS)
-      exc_tbl_list = split_into_lines(self._env.EXCLUDE_TABLES, False)
-      exc_tbl_filter = f"and t.table_name not in ({exc_tbl_list})" if exc_tbl_list.strip() else ""
       
       Configuration.substitutions = {
         'l_pdb_table': l_pdb_table,
@@ -1179,7 +1736,6 @@ class TTS_SRC_GATHER_DATA:
         'ts_list': ts_list.upper(),
         'sc_list': sc_list.upper(),
         'database_name': self._env.DATABASE_NAME,
-        'exc_tbl_filter': exc_tbl_filter,
         'l_common_clause': l_common_clause,
       }
             
@@ -1404,12 +1960,12 @@ class TTS_SRC_RMAN_BACKUP:
       print(f"Failed to get CPU count: {e.stderr.decode()}\n")
       return 1  # Fallback to 1 CPU if unable to determine
 
-  def _execute_command(self, command, command_type):
-    """Executes the given shell command and handles errors."""
+  def _execute_command_args(self, command, command_type):
+    """Executes the given command arguments and handles errors."""
     try:
-      process = subprocess.Popen(command, shell=True, stdout=sys.stdout, stderr=sys.stderr, universal_newlines=True)
-      stdout, stderr = process.communicate()
-      
+      process = subprocess.Popen(command, stdout=sys.stdout, stderr=sys.stderr, universal_newlines=True)
+      process.communicate()
+
       if process.returncode == 0 or process.returncode == 5:
         print(f"{command_type} executed successfully.")
         return 0
@@ -1419,6 +1975,64 @@ class TTS_SRC_RMAN_BACKUP:
     except Exception as e:
         print(f"{command_type} execution encountered an error: {str(e)} \n")
         return 1
+  
+  def _write_expdp_parfile(self, parfile_name, parfile_content):
+    """Create a Data Pump parfile in the project directory."""
+    parfile_path = os.path.join(self._env.PROJECT_DIR_PATH, parfile_name)
+  
+    if os.path.exists(parfile_path):
+      os.remove(parfile_path)
+  
+    with open(parfile_path, "w") as parfile:
+      for line in parfile_content.splitlines():
+        line = line.strip()
+        if line:
+          parfile.write(f"{line}\n")
+  
+    os.chmod(parfile_path, 0o600)
+    return parfile_path
+
+  def _execute_expdp_parfile(self, parfile_path):
+    """Run expdp using the supplied parfile."""
+    expdp_bin = os.path.join(self._env.ORAHOME, "bin", "expdp")
+    return self._execute_command_args([expdp_bin, f"parfile={parfile_path}"], "EXPDP")
+
+  def _execute_rman_script(self, rman_script, log_file, command_type):
+    """Run RMAN with script supplied through stdin."""
+    rman_bin = os.path.join(self._env.ORAHOME, "bin", "rman")
+
+    try:
+      with open(log_file, "w") as outfile:
+        process = subprocess.Popen(
+          [rman_bin],
+          stdin=subprocess.PIPE,
+          stdout=subprocess.PIPE,
+          stderr=subprocess.STDOUT,
+          universal_newlines=True,
+          bufsize=1
+        )
+        process.stdin.write(rman_script)
+        if not rman_script.endswith("\n"):
+          process.stdin.write("\n")
+        process.stdin.close()
+
+        for line in process.stdout:
+          sys.stdout.write(line)
+          sys.stdout.flush()
+          outfile.write(line)
+          outfile.flush()
+
+        process.wait()
+
+      if process.returncode == 0 or process.returncode == 5:
+        print(f"{command_type} executed successfully.")
+        return 0
+
+      print(f"{command_type} failed with return code {process.returncode} \n")
+      return 1
+    except Exception as e:
+      print(f"{command_type} execution encountered an error: {str(e)} \n")
+      return 1
   
   def _append_log_to_backup(self, log_filename):
     """Appends the specified log file to backup.log."""
@@ -1518,10 +2132,14 @@ class TTS_SRC_RMAN_BACKUP:
         
         count += 1
        
+        l_dedicated_clause = ""
+        connection_mode = self._env.DB_PROPS_ARRAY[25].strip().upper()
+        if connection_mode in ("SHARED", "POOLED"):
+          l_dedicated_clause = ":dedicated"
         if self._env.DB_VERSION == '11g':
-          l_conn_str = f"{host_name}:{self._env.LSNR_PORT}/{self._env.DB_SVC_NAME}"
+          l_conn_str = f"{host_name}:{self._env.LSNR_PORT}/{self._env.DB_SVC_NAME}{l_dedicated_clause}"
         else:
-          l_conn_str = f"{host_name}:{self._env.LSNR_PORT}/{self._env.DB_SVC_NAME} as sysdba"
+          l_conn_str = f"{host_name}:{self._env.LSNR_PORT}/{self._env.DB_SVC_NAME}{l_dedicated_clause} as sysdba"
 
         self._env.CHANNEL_STRING += f"""
         allocate channel c_{instance_name}_{c} device type sbt 
@@ -1548,19 +2166,34 @@ class TTS_SRC_RMAN_BACKUP:
       else:
         return (self._env.PARALLELISM + len(self.host_array) - 1) // len(self.host_array)
 
-  def check_log_for_errors(self, log_file):
+  def check_log_for_errors(self, log_file, require_rman_backup_completion=False):
     """Checks the RMAN/EXPDP log file for errors and raises an exception if any are found."""
     try:
       with open(log_file, 'r') as log:
         log_contents = log.read()
+        rman_backup_started = False
+        rman_backup_finished = False
 
         for line in log_contents.splitlines():
+          if "Starting backup at" in line:
+            rman_backup_started = True
+          if "Finished backup at" in line:
+            rman_backup_finished = True
           if "RMAN-" in line and "WARNING" not in line:
             print(f"RMAN errors found. {line}")
             print(f"Please check logs at {log_file}.")
             return False
           if "EXPORT" in line and "stopped due to fatal error" in line:
             print(f"EXPDP errors found. {line}")
+            print(f"Please check logs at {log_file}.")
+            return False
+        if require_rman_backup_completion:
+          if not rman_backup_started:
+            print("RMAN backup start marker not found.")
+            print(f"Please check logs at {log_file}.")
+            return False
+          if not rman_backup_finished:
+            print("RMAN backup did not complete successfully. Missing 'Finished backup at' marker.")
             print(f"Please check logs at {log_file}.")
             return False
       return True
@@ -1654,6 +2287,9 @@ class TTS_SRC_RMAN_BACKUP:
       else:
         incremental_clause = "incremental level 1"
     else:
+      if self._env.BACKUP_LEVEL == 0:
+        incremental_clause = ""
+      else:
         incremental_clause = f"incremental from scn {self._env.INCR_SCN}"
 
     backup_string += (
@@ -1665,10 +2301,14 @@ class TTS_SRC_RMAN_BACKUP:
       f"{tablespace_dump_clause};"
     )
     
+    l_dedicated_clause = ""
+    connection_mode = self._env.DB_PROPS_ARRAY[25].strip().upper()
+    if connection_mode in ("SHARED", "POOLED"):
+      l_dedicated_clause = ":dedicated"
     if self._env.DB_VERSION == '11g':
-      l_conn_str = f"{host_name}:{self._env.LSNR_PORT}/{self._env.DB_SVC_NAME}"
+      l_conn_str = f"{host_name}:{self._env.LSNR_PORT}/{self._env.DB_SVC_NAME}{l_dedicated_clause}"
     else:
-      l_conn_str = f"{host_name}:{self._env.LSNR_PORT}/{self._env.DB_SVC_NAME} as sysdba"
+      l_conn_str = f"{host_name}:{self._env.LSNR_PORT}/{self._env.DB_SVC_NAME}{l_dedicated_clause} as sysdba"
 
     if self._env.STORAGE_TYPE == "FSS":
       encryption_off_clause = "set encryption off;"
@@ -1693,12 +2333,17 @@ class TTS_SRC_RMAN_BACKUP:
         'command_id_clause': command_id_clause.upper(),
       }
     
-    return_val = self._execute_command(template.get('tts_src_backup_tablespaces'), "RMAN")
+    log_file = f"{self._env.TTS_DIR_PATH}/backup_{backup_type}.log"
+    return_val = self._execute_rman_script(
+        template.get('tts_src_backup_tablespaces'),
+        log_file,
+        "RMAN"
+    )
 
     # Check the log file for errors after execution
     log_file = f"{self._env.TTS_DIR_PATH}/backup_{backup_type}.log"
 
-    if not self.check_log_for_errors(log_file):
+    if not self.check_log_for_errors(log_file, require_rman_backup_completion=True):
       print(f"Error found in RMAN log file: {log_file}. Backup failed.")
       return 1
     rman_log_file = ""
@@ -1734,8 +2379,12 @@ class TTS_SRC_RMAN_BACKUP:
         'tts_dir_name': self._env.TTS_DIR_NAME,
         'job_name_str': job_name_str.upper(),
       }
-    expdp_command = ' '.join(line.strip() for line in template.get("tts_src_export_schema").splitlines() if line.strip())
-    return_val = self._execute_command(expdp_command, "EXPDP")
+    parfile_path = self._write_expdp_parfile("expdp_schema.par", template.get("tts_src_export_schema"))
+    try:
+      return_val = self._execute_expdp_parfile(parfile_path)
+    finally:
+      if os.path.exists(parfile_path):
+        os.remove(parfile_path)
     expdp_log_file = "export.log"
     
     # Append logs to expdp log file
@@ -1752,6 +2401,49 @@ class TTS_SRC_RMAN_BACKUP:
       return 1
     return return_val
 
+  def tts_src_export_xml_tables(self, template):
+    """Export XML Tables"""
+    xml_dump_path = os.path.join(self._env.TTS_DIR_PATH, 'xml_tables.dmp')
+    if os.path.exists(xml_dump_path):
+      os.remove(xml_dump_path)
+    
+    l_conn_str = f"{self._env.HOSTNAME}:{self._env.LSNR_PORT}/{self._env.DB_SVC_NAME} AS SYSDBA"
+
+    job_name_str = ""
+    if self._env.ZDM_BASED_TRANSPORT.upper() == "TRUE":
+      job_name_str = f'JOB_NAME={self._env.PROJECT_NAME}_ZDM_XML_EXPORT'
+
+    Configuration.substitutions = {
+        'oracle_home': self._env.ORAHOME,
+        'db_user': self._env.DBUSER,
+        'db_password': self._env.DBPASSWORD,
+        'xml_export_tables': self._env.xml_export_tables,
+        'l_conn_str': l_conn_str,
+        'tts_dir_name': self._env.TTS_DIR_NAME,
+        'job_name_str': job_name_str.upper(),
+      }
+
+    parfile_path = self._write_expdp_parfile("expdp_xml.par", template.get("tts_src_export_xml_tables"))
+    try:
+      return_val = self._execute_expdp_parfile(parfile_path)
+    finally:
+      if os.path.exists(parfile_path):
+        os.remove(parfile_path)
+    expdp_log_file = "export_xml.log"
+    
+    # Append logs to expdp log file
+    self._append_log_to_backup(expdp_log_file)
+    
+    # Append schema expdp logs to tts log file
+    self._append_to_tts_log(expdp_log_file)
+
+    # Check the log file for errors after execution
+    log_file = f"{self._env.TTS_DIR_PATH}/{expdp_log_file}"
+
+    if not self.check_log_for_errors(log_file):
+      print(f"Error found in EXPDP log file: {log_file}. Export of XML tables Metadata failed.")
+      return 1
+    return return_val
   
   def tts_src_export_tablespaces(self, template, _validate=False):
     """Export tablespaces"""
@@ -1765,20 +2457,31 @@ class TTS_SRC_RMAN_BACKUP:
     l_conn_str = f"{self._env.HOSTNAME}:{self._env.LSNR_PORT}/{self._env.DB_SVC_NAME} AS SYSDBA"
       
     exclude_table_list = [tbl.strip() for tbl in self._env.EXCLUDE_TABLES.split(',') if tbl.strip()]
-    quoted_tables = ",".join(f"\\\'{tbl}\\\'" for tbl in exclude_table_list)
+    xml_table_list = [
+        tbl.strip().split('.')[-1].replace('"', '')
+        for tbl in self._env.xml_export_tables.split(',')
+        if tbl.strip()
+    ]
+    tables_to_exclude = list(dict.fromkeys(exclude_table_list + xml_table_list))
+    quoted_tables = ",".join(f"'{tbl}'" for tbl in tables_to_exclude)
+    
+    exclude_filters = []
     
     xml_table_exclude_clause = ""
     if quoted_tables:
-      xml_table_exclude_clause = f'TABLE:\\\"IN \({quoted_tables}\)\\\"'
+      xml_table_exclude_clause = f'TABLE:"IN ({quoted_tables})"'
+      exclude_filters.append(xml_table_exclude_clause)
+
+    if self._env.EXCLUDE_STATISTICS.strip().upper() == "TRUE":
+      exclude_filters.extend([
+        "STATISTICS",
+        "INDEX_STATISTICS",
+        "TABLE_STATISTICS"
+      ])
     
     exclude_clause = ""
-    if self._env.EXCLUDE_STATISTICS.strip().upper() == "TRUE":
-      if xml_table_exclude_clause:
-        exclude_clause = f'EXCLUDE=STATISTICS,INDEX_STATISTICS,TABLE_STATISTICS,{xml_table_exclude_clause}'
-      else:
-        exclude_clause = 'EXCLUDE=STATISTICS,INDEX_STATISTICS,TABLE_STATISTICS'
-    elif xml_table_exclude_clause:
-      exclude_clause = f'EXCLUDE={xml_table_exclude_clause}'
+    if exclude_filters:
+      exclude_clause = f"EXCLUDE={','.join(exclude_filters)}" 
     
     job_name_str = ""
     if self._env.ZDM_BASED_TRANSPORT.upper() == "TRUE":
@@ -1799,8 +2502,14 @@ class TTS_SRC_RMAN_BACKUP:
         'tts_closure_check': 'TTS_CLOSURE_CHECK=TEST_MODE' if _validate else '',
       }
 
-    expdp_command = ' '.join(line.strip() for line in template.get("tts_src_export_tablespaces").splitlines() if line.strip())    
-    return_val = self._execute_command(expdp_command, "EXPDP")
+
+    parfile_path = self._write_expdp_parfile("expdp_tablespace.par", template.get("tts_src_export_tablespaces"))
+    try:
+      return_val = self._execute_expdp_parfile(parfile_path)
+    finally:
+      if os.path.exists(parfile_path):
+        os.remove(parfile_path)
+      
     # Append logs to expdp log file
     self._append_log_to_backup(expdp_log_file)
     
@@ -1831,8 +2540,9 @@ class TTS_SRC_RMAN_BACKUP:
     sched_cred_list = self._env.sched_cred_list.split(',')
 
     exclude_table_list = self._env.EXCLUDE_TABLES.split(',')
+    common_user_remap = _parse_common_user_remap(self._env.COMMON_USER_REMAP)
 
-    new_backup_level = self._env.BACKUP_LEVEL + 1
+    new_backup_level = next_backup_level(self._env.BACKUP_LEVEL)
     
     if self._env.TBS_READ_ONLY == "true":
       next_scn = self.SCNS_ARRAY[1]
@@ -1844,6 +2554,10 @@ class TTS_SRC_RMAN_BACKUP:
       "pdbname": self._env.DATABASE_NAME,
       "pdb_guid": self._env.DB_PROPS_ARRAY[0],
       "schemas": [sc.upper() for sc in schema_list],
+      "common_user_remap": [
+        {"source_schema": source, "target_schema": target}
+        for source, target in common_user_remap.items()
+      ],
       "tablespaces": [ts.upper() for ts in ts_list],
       "tde_keys_file": self._env.TDE_KEYS_FILE,
       "uri": self._env.TTS_BACKUP_URL if self._env.STORAGE_TYPE == "OBJECT_STORAGE" else None,
@@ -1858,7 +2572,7 @@ class TTS_SRC_RMAN_BACKUP:
       "db_edition": self._env.DB_PROPS_ARRAY[7],
       "db_version": self._env.DB_PROPS_ARRAY[8],
       "db_version_full": self._env.DB_PROPS_ARRAY[9],
-      "table_with_xml_type": self._env.DB_PROPS_ARRAY[10],
+      "table_with_xml_type": self._env.table_with_xml_type,
       "dbtimezone": self._env.DB_PROPS_ARRAY[11],
       "storage_size": self._env.DB_PROPS_ARRAY[12],
       "sf_additional_size": self._env.DB_PROPS_ARRAY[19],
@@ -1915,6 +2629,7 @@ class TTS_SRC_BUNDLE_MANAGER:
   def __init__(self, env):
     self._env = env
     self.tts_src_create_bundle()
+    self._oci_curl = OCI_CURL_SIGNER(env)
   
   def tts_src_create_bundle(self):
     """Create a bundle file for transport."""
@@ -1927,11 +2642,14 @@ class TTS_SRC_BUNDLE_MANAGER:
     
     schema_dump = ""
     tablespace_dump = ""
+    xml_dump = ""
     
     # Determine if final backup is requested
     if self._env.FINAL_BACKUP.upper() == "TRUE":
       tablespace_dump = os.path.join(bundle_dir, "tablespace.dmp")
       schema_dump = os.path.join(bundle_dir, "schema.dmp")
+      if self._env.table_with_xml_type.upper() == "TRUE":
+        xml_dump = os.path.join(bundle_dir, "xml_tables.dmp")
 
     tde_path = ""
     
@@ -1950,6 +2668,8 @@ class TTS_SRC_BUNDLE_MANAGER:
           tar.add(os.path.join(bundle_dir, "cwallet.sso"), arcname=f"{os.path.basename(bundle_dir)}/cwallet.sso")
         if schema_dump:
           tar.add(schema_dump, arcname=f"{os.path.basename(bundle_dir)}/schema.dmp")
+        if xml_dump:
+          tar.add(xml_dump, arcname=f"{os.path.basename(bundle_dir)}/xml_tables.dmp")
         if tablespace_dump:
           tar.add(tablespace_dump, arcname=f"{os.path.basename(bundle_dir)}/tablespace.dmp")
         if tde_path:
@@ -1988,39 +2708,24 @@ class TTS_SRC_BUNDLE_MANAGER:
           subprocess.run(rm_tts_dir, shell=True, check=True)
   
   def tts_src_upload_bundle(self):
-    """Upload the created bundle to object storage or fss."""
+    """
+    Upload the created bundle to Object Storage or FSS.
+    """
     try:
       if self._env.STORAGE_TYPE == "OBJECT_STORAGE":
-        url = f"{self._env.TTS_BUNDLE_URL}/o/{self._env.BUNDLE_FILE_NAME}"
-        # Parse the URL
-        parsed_url = urlparse(url)
-        # Extract the region from the netloc (example: objectstorage.us-ashburn-1.oraclecloud)
-        region = parsed_url.netloc.split('.')[1]
-        # Extract the namespace from the path (after "/n/")
-        namespace = parsed_url.path.split('/')[2]
-        # Extract the bucket name from the path (after "/b/")
-        bucket_name = parsed_url.path.split('/')[4]
+        url = self._oci_curl.build_object_url(
+          self._env.TTS_BUNDLE_URL,
+          self._env.BUNDLE_FILE_NAME
+        )
 
-        config = oci.config.from_file(self._env.CONFIG_FILE, "DEFAULT")
-        config['region'] = region
-        
-        object_storage_client = oci.object_storage.ObjectStorageClient(config=config,
-                                  service_endpoint=url.split('/n')[0])
-        if self._env.OCI_PROXY_HOST and self._env.OCI_PROXY_PORT:
-          proxy_url = f"{self._env.OCI_PROXY_HOST}:{self._env.OCI_PROXY_PORT}"
-          object_storage_client.base_client.session.proxies = {'https': proxy_url}
-          
-        with open(self._env.TTS_BUNDLE_FILE, 'rb') as file:
-          response = object_storage_client.put_object(
-              namespace_name=namespace, 
-              bucket_name=bucket_name, 
-              object_name=self._env.BUNDLE_FILE_NAME, 
-              put_object_body=file
-          )  
+        self._oci_curl.request(
+          method="PUT",
+          url=url,
+          body_file=self._env.TTS_BUNDLE_FILE,
+          content_type="application/octet-stream",
+          expected_status=(200,)
+        )
 
-        # Check HTTP response code
-        if response.status != 200:
-          raise ValueError(f"Uploading transport bundle to object storage failed with HTTP status: {response.status}...")
         print(f"Bundle uploaded successfully to {url}.")
         self.display_success_message(url)
       elif self._env.STORAGE_TYPE == "FSS":
@@ -2079,6 +2784,10 @@ def main(args):
       print(f"TTS backup utility version: {tts_version}\n")
       sys.exit(0)
 
+    if args:
+      print_stderr("Command line options are not supported. Configure IGNORE_NON_FATAL_ERRORS and JDK8_PATH in tts-backup-env.txt.")
+      sys.exit(1)
+
     # Check if python version is >= 3
     check_python_version((3,6))
 
@@ -2089,14 +2798,18 @@ def main(args):
     template = Template(os.path.join(scriptpath(), 'ttsTemplate.txt'))
 
     # Configure or Load the environment
-    _env = Environment(args, os.path.join(scriptpath(), 'tts-backup-env.txt'))
+    _env = Environment(os.path.join(scriptpath(), 'tts-backup-env.txt'))
  
     ### STEP 1: RUN tablespace validations ###
     print("\n* Run tablespace validations...\n")
     start_time = log_start_time()
     run_validations = TTS_SRC_RUN_VALIDATIONS(_env)
     _env.TABLESPACES = run_validations._get_tablespaces(template)
+    print(f"\n TABLESPACES LIST : {_env.TABLESPACES}")
     _env.SCHEMAS = run_validations._get_schemas(template)
+    print(f"\n SCHEMAS LIST : {_env.SCHEMAS}")
+    print(f"\n COMMON USER REMAP LIST : {_env.COMMON_USER_REMAP}")
+    _env.xml_export_tables = run_validations._get_xml_export_tables(template)
     _env.ols_policies_list = run_validations._validate_ols_policies(template)
     if _env.DB_VERSION != '11g':
       _env.redaction_policies_list = run_validations._validate_redaction_policies(template)
@@ -2238,6 +2951,14 @@ def main(args):
           print("Export Tablespace schema Failed.\n")
           exit(1)
         log_end_time(start_time)
+        
+        if _env.table_with_xml_type.upper() == "TRUE":
+          print(f"\n* Export {_env.TABLESPACES.upper()} tablespaces XML tables using data pump...\n")
+          start_time = log_start_time()
+          if rman_backup.tts_src_export_xml_tables(template) == 1:
+            print("Export XML Tables Failed.\n")
+            exit(1)
+          log_end_time(start_time)
 
       ### STEP 8: Create manifiest ###
       print("\n* Create manifest...\n")
@@ -2276,8 +2997,9 @@ def main(args):
         start_time = log_start_time()
         if rman_backup.tts_src_export_tablespaces(template, True) == 1:
           print("Export Tablespace metadata Failed.\n")
+          _env.add_dry_run_error("Validation export for tablespaces metadata using datapump failed.")
         log_end_time(start_time)
-      print("TTS BACKUP TOOL : Dry Run Completed Successfully...")
+      sys.exit(_env.report_dry_run_result())
 
   except FileNotFoundError as err_msg:
     print(f"File Not Found Error: {err_msg}")
