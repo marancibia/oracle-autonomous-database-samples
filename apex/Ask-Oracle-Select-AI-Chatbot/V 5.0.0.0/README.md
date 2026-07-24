@@ -8,7 +8,7 @@ Release 5.0 evolves the original conversational interface into a low-code applic
 
 - Visual Agent Builder for Oracle Select AI Agent Framework agents and teams
 - Agent Team Map for inspecting agent, task, and tool relationships
-- Prebuilt Oracle Select AI agent teams that can be installed and configured in the application
+- Prebuilt Oracle Select AI agents that can be installed and configured in the application
 - AI Profile lifecycle management for NL2SQL, RAG, and agents
 - Centralized governance, defaults, branding, and button-level access controls
 
@@ -24,22 +24,22 @@ Release 5.0 helps teams move from asking questions to building governed AI appli
 - **Agents and teams** — run Oracle Select AI Agent Framework agents and agent teams.
 - **Visual Agent Builder** — generate an initial team from natural language, then refine its teams, agents, tasks, and tools in one visual workflow before validating it.
 - **Agent Team Map** — view routing and relationships among teams, agents, tasks, and tools.
-- **Prebuilt agent teams** — install a provided team through the application, then configure its required credentials, parameters, tools, target resources. 
+- **Prebuilt agents** — install a provided agent through the application, then configure its required credentials, parameters, tools, and target resources, plus data access.
 - **Profiles and governance** — create, edit, validate, and reuse AI Profiles; configure application defaults, branding, and feature access.
 
 ## Screenshots
 
-**Visual Agent Builder:** Create and refine an agent team, including its agents, tasks, and assigned tools.
-
 ![Agent Builder showing an agent team with its agents, tasks, and assigned tools](../../images/agent_builder.png)
 
-**Agent Team Map:** Review the relationships that determine how teams, agents, tasks, and tools work together.
+**Figure 1:** Visual Agent Builder for creating and refining an agent team, including its agents, tasks, and assigned tools.
 
 ![Agent Team Map showing relationships among teams, agents, tasks, and tools](../../images/agent_team_map.png)
 
-**AI Profile management:** Configure and validate the profile used for an NL2SQL & RAG experience.
+**Figure 2:** Agent Team Map for reviewing the relationships among teams, agents, tasks, and tools.
 
 ![AI Profile management screen for configuring an NL2SQL profile](../../images/nl2sql_profile.png)
+
+**Figure 3:** AI Profile management for configuring and validating an NL2SQL profile.
 
 ## Repository contents
 
@@ -49,7 +49,7 @@ Release 5.0 helps teams move from asking questions to building governed AI appli
 | [Ask Oracle App Installation Steps.pdf](https://github.com/sandeepkhot/oracle-autonomous-database-samples/blob/main/apex/Ask-Oracle-Select-AI-Chatbot/Ask%20Oracle%20App%20Installation%20Steps.pdf) | Installation guide. |
 | `README.md` | This overview, setup guidance, and troubleshooting notes. |
 
-Prebuilt agent team definitions are included with the application export and become available in the **Prebuilt Agents** interface after import. Installing a team is only the first step: configure its credentials, parameters, tools, target resources, and least-privilege data access before using it. This version does not include standalone prebuilt-agent definition files outside the application export.
+Prebuilt agent definitions are included with the application export and become available in the **Prebuilt Agents** interface after import. Installing an agent is only the first step: configure its credentials, parameters, tools, and target resources, plus least-privilege data access, before using it. This version does not include standalone prebuilt-agent definition files outside the application export.
 
 ## Prerequisites and compatibility
 
@@ -57,24 +57,36 @@ Use a supported Oracle AI Database or Autonomous AI Database deployment where Or
 
 ### App installation prerequisites
 
-The following grants are required to install the application. Replace `<APP_INSTALL_SCHEMA>` with the schema used to install and run the application:
+#### Base application permissions
+
+The following package permissions are required for the application install schema. Replace `<APP_INSTALL_SCHEMA>` with the schema used to install and run the application:
 
 ```sql
 grant execute on dbms_cloud to <APP_INSTALL_SCHEMA>;
 grant execute on dbms_cloud_ai to <APP_INSTALL_SCHEMA>;
+```
+
+The install schema also needs an AI provider credential and access to the provider endpoint. For providers outside OCI Generative AI, a DBA may need to grant network ACL access for the applicable provider host. Create or make available the credential and AI Profile before testing the application.
+
+#### Optional feature permissions
+
+Grant only the permissions needed for enabled features:
+
+```sql
+-- Required for Agent Framework and prebuilt agents
 grant execute on dbms_cloud_ai_agent to <APP_INSTALL_SCHEMA>;
 ```
 
-If you create a new application install schema, grant it the following privileges before importing the application. These privileges help avoid installation and runtime errors caused by missing database access:
+#### DBA-only schema provisioning
+
+The following are DBA-run provisioning steps for a new application install schema. They are not commands the application parsing schema should execute. Use only the specific object privileges and tablespace quota required by your environment; do not grant `CONNECT` or `RESOURCE` as the baseline.
 
 ```sql
 create user <APP_INSTALL_SCHEMA> identified by <STRONG_PASSWORD>;
 
-grant connect, resource to <APP_INSTALL_SCHEMA>;
 grant create session, create table, create sequence, create procedure, create view to <APP_INSTALL_SCHEMA>;
 grant read on directory data_pump_dir to <APP_INSTALL_SCHEMA>;
-grant execute on dbms_cloud_repo to <APP_INSTALL_SCHEMA>;
-alter user <APP_INSTALL_SCHEMA> quota unlimited on data;
+alter user <APP_INSTALL_SCHEMA> quota <QUOTA> on <TABLESPACE>;
 ```
 
 ### Minimum setup: Chat and NL2SQL
@@ -87,11 +99,11 @@ alter user <APP_INSTALL_SCHEMA> quota unlimited on data;
 - A RAG AI Profile and trusted content indexed through Select AI or the Ask Oracle application interface.
 - An Oracle AI Vector Search vector index created for that RAG configuration. When the selected provider supplies a default embedding model, explicit embedding-model configuration may not be required.
 
-### Optional setup: Agent Framework and prebuilt agent teams
+### Optional setup: Agent Framework and prebuilt agents
 
 - Oracle Select AI Agent Framework available and configured in the target database service.
 - An agent team selected in the application for agent conversations.
-- For each prebuilt agent team, configuration of its required credentials, parameters, tools, target resources, and data access. Do not assume an installed team is ready for use without this environment-specific setup.
+- For each prebuilt agent, configuration of its required credentials, parameters, tools, and target resources, plus data access. Do not assume an installed agent is ready for use without this environment-specific setup.
 
 > **Safety note:** Test the application, RAG indexes, and agent teams in a non-production environment first. Apply least privilege to the parsing schema and to every credential, tool, and data source used by the application.
 
@@ -113,7 +125,7 @@ Configure the application before making it available to end users:
 - **AI Profiles:** Create or select the profiles for Chat, NL2SQL, RAG, and agents. Validate the provider credential, model, and profile settings.
 - **Conversation defaults:** Choose the default conversation mode and the default NL2SQL Profile, RAG Profile, and optional Agent Team.
 - **RAG:** Select the RAG AI Profile, Oracle AI Vector Search vector index, and retrieval settings. Use the provider default embedding model where applicable, then load and index trusted content before testing retrieval.
-- **Agents:** Use Agent Builder to create or refine teams, agents, tasks, and tools; validate the team before assigning it as a default. For a prebuilt team, complete its required environment-specific configuration before validation.
+- **Agents:** Use Agent Builder to create or refine teams, agents, tasks, and tools; validate the team before assigning it as a default. For a prebuilt agent, complete its required environment-specific configuration before validation.
 - **Governance:** Set application name, logo, branding, navigation, and permissions for actions such as SQL Editor, exports, deletion, conversation timer, and agent reasoning.
 
 ## Quick start and validation
@@ -136,7 +148,7 @@ After configuration, verify each enabled capability with a prompt appropriate fo
 | NL2SQL cannot query data | Verify grants and synonyms for the parsing schema, and confirm the profile is configured for the intended schemas and objects. |
 | RAG returns no relevant results | Confirm the correct embedding model, vector index, indexed content, and retrieval settings are configured. |
 | Agent option is unavailable or fails | Confirm Agent Framework configuration, validate the agent team, and select the team in the conversation settings. |
-| A prebuilt team cannot run | Complete the team's required credential, parameter, tool, target-resource, and data-access configuration, then validate it before use. |
+| A prebuilt agent cannot run | Complete the agent's required credential, parameter, tool, target-resource, and data-access configuration, then validate it before use. |
 | A button or feature is missing | Review the application's action controls and button-level access settings for the current user. |
 
 ## Resources
