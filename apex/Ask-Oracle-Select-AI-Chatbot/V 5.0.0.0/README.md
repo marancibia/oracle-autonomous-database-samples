@@ -34,11 +34,13 @@ Release 5.0 helps teams move from asking questions to building governed AI appli
 **Figure 1:** Visual Agent Builder for creating and refining an agent team, including its agents, tasks, and assigned tools.
 
 <br>
+<br>
 
 ![Agent Team Map showing relationships among teams, agents, tasks, and tools](../../images/agent_team_map.png)
 
 **Figure 2:** Agent Team Map for reviewing the relationships among teams, agents, tasks, and tools.
 
+<br>
 <br>
 
 ![AI Profile management screen for configuring an NL2SQL profile](../../images/nl2sql_profile.png)
