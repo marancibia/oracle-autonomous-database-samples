@@ -55,10 +55,7 @@ Prebuilt agent team definitions are included with the application export and bec
 
 Use a supported Oracle AI Database or Autonomous AI Database deployment where Oracle APEX and Oracle Select AI are available. The export was generated with Oracle APEX **24.2.17**; import it into a compatible APEX environment. Agent capabilities additionally require a deployment that supports the Oracle Select AI Agent Framework. Confirm feature availability, supported providers, and version requirements for your target database service before deployment.
 
-### Minimum setup: Chat and NL2SQL
-
-- An APEX workspace and parsing schema. Import as that schema, or use a database account with `APEX_ADMINISTRATOR_ROLE`.
-- A Select AI provider credential, a supported model, and an AI Profile that the parsing schema can use.
+### App installation prerequisites
 
 The following grants are required to install the application. Replace `<APP_INSTALL_SCHEMA>` with the schema used to install and run the application:
 
@@ -79,6 +76,11 @@ grant read on directory data_pump_dir to <APP_INSTALL_SCHEMA>;
 grant execute on dbms_cloud_repo to <APP_INSTALL_SCHEMA>;
 alter user <APP_INSTALL_SCHEMA> quota unlimited on data;
 ```
+
+### Minimum setup: Chat and NL2SQL
+
+- An APEX workspace and parsing schema. Import as that schema, or use a database account with `APEX_ADMINISTRATOR_ROLE`.
+- A Select AI provider credential, a supported model, and an AI Profile that the parsing schema can use.
 
 ### Optional setup: RAG
 
