@@ -60,12 +60,24 @@ Use a supported Oracle AI Database or Autonomous AI Database deployment where Or
 - An APEX workspace and parsing schema. Import as that schema, or use a database account with `APEX_ADMINISTRATOR_ROLE`.
 - A Select AI provider credential, a supported model, and an AI Profile that the parsing schema can use.
 
-Grant the application install schema (`<APP_INSTALL_SCHEMA>`) execute access to the required Oracle Select AI packages:
+The following grants are required to install the application. Replace `<APP_INSTALL_SCHEMA>` with the schema used to install and run the application:
 
 ```sql
 grant execute on dbms_cloud to <APP_INSTALL_SCHEMA>;
 grant execute on dbms_cloud_ai to <APP_INSTALL_SCHEMA>;
 grant execute on dbms_cloud_ai_agent to <APP_INSTALL_SCHEMA>;
+```
+
+If you create a new application install schema, grant it the following privileges before importing the application. These privileges help avoid installation and runtime errors caused by missing database access:
+
+```sql
+create user <APP_INSTALL_SCHEMA> identified by <STRONG_PASSWORD>;
+
+grant connect, resource to <APP_INSTALL_SCHEMA>;
+grant create session, create table, create sequence, create procedure, create view to <APP_INSTALL_SCHEMA>;
+grant read on directory data_pump_dir to <APP_INSTALL_SCHEMA>;
+grant execute on dbms_cloud_repo to <APP_INSTALL_SCHEMA>;
+alter user <APP_INSTALL_SCHEMA> quota unlimited on data;
 ```
 
 ### Optional setup: RAG
