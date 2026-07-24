@@ -1,6 +1,6 @@
 # Ask Oracle Select AI 5.0
 
-Ask Oracle Select AI is an Oracle APEX application that provides a low-code interface to Oracle Select AI on Oracle AI Database and Autonomous AI Database. It brings conversational AI, natural-language-to-SQL (NL2SQL), Retrieval-Augmented Generation (RAG), charting, and agent experiences into one application that you can inspect, customize, and extend.
+Ask Oracle Select AI is an Oracle APEX application that provides a low-code interface to Oracle Select AI on Oracle AI Database and Autonomous AI Database. It brings conversational AI, natural-language-to-SQL (NL2SQL), Retrieval-Augmented Generation (RAG), and agent experiences into one application that you can inspect, customize, and extend.
 
 Release 5.0 evolves the original conversational interface into a low-code application platform for configuring, governing, and deploying Select AI-powered experiences.
 
@@ -8,14 +8,13 @@ Release 5.0 evolves the original conversational interface into a low-code applic
 
 - Visual Agent Builder for Oracle Select AI Agent Framework agents and teams
 - Agent Team Map for inspecting agent, task, and tool relationships
-- Prebuilt Oracle Select AI agents that can be installed and customized in the application
-- Natural-language chart generation and more suitable fallback displays
+- Prebuilt Oracle Select AI agent teams that can be installed and configured in the application
 - AI Profile lifecycle management for NL2SQL, RAG, and agents
 - Centralized governance, defaults, branding, and button-level access controls
 
 ## Why use Release 5.0?
 
-Release 5.0 helps teams move from asking questions to building governed AI applications. Use it to configure NL2SQL and RAG profiles, build and validate agent teams visually, generate charts from natural-language prompts, and control the capabilities available to different users.
+Release 5.0 helps teams move from asking questions to building governed AI applications. Use it to configure NL2SQL and RAG profiles, build and validate agent teams visually, and control the capabilities available to different users.
 
 ## Key capabilities
 
@@ -25,17 +24,20 @@ Release 5.0 helps teams move from asking questions to building governed AI appli
 - **Agents and teams** — run Oracle Select AI Agent Framework agents and agent teams.
 - **Visual Agent Builder** — generate an initial team from natural language, then refine its teams, agents, tasks, and tools in one visual workflow before validating it.
 - **Agent Team Map** — view routing and relationships among teams, agents, tasks, and tools.
-- **Charts** — request visualizations in natural language. If the requested chart does not fit the returned data shape, Ask Oracle can use a more appropriate display, such as a table or alternate chart type.
+- **Prebuilt agent teams** — install a provided team through the application, then configure its required credentials, parameters, tools, target resources. 
 - **Profiles and governance** — create, edit, validate, and reuse AI Profiles; configure application defaults, branding, and feature access.
-- **Conversations** — organize conversation history and optionally use text-to-speech for responses.
 
 ## Screenshots
 
+**Visual Agent Builder:** Create and refine an agent team, including its agents, tasks, and assigned tools.
+
 ![Agent Builder showing an agent team with its agents, tasks, and assigned tools](../../images/agent_builder.png)
+
+**Agent Team Map:** Review the relationships that determine how teams, agents, tasks, and tools work together.
 
 ![Agent Team Map showing relationships among teams, agents, tasks, and tools](../../images/agent_team_map.png)
 
-![Chart generation displaying a visualization produced from a natural-language prompt](../../images/chart_generation.png)
+**AI Profile management:** Configure and validate the profile used for an NL2SQL & RAG experience.
 
 ![AI Profile management screen for configuring an NL2SQL profile](../../images/nl2sql_profile.png)
 
@@ -47,20 +49,30 @@ Release 5.0 helps teams move from asking questions to building governed AI appli
 | [Ask Oracle App Installation Steps.pdf](https://github.com/sandeepkhot/oracle-autonomous-database-samples/blob/main/apex/Ask-Oracle-Select-AI-Chatbot/Ask%20Oracle%20App%20Installation%20Steps.pdf) | Installation guide. |
 | `README.md` | This overview, setup guidance, and troubleshooting notes. |
 
-Prebuilt agent definitions and README image assets are not separate files in this repository. Use the application interface after import to browse and manage the prebuilt agents provided by the application.
+Prebuilt agent team definitions are included with the application export and become available in the **Prebuilt Agents** interface after import. Installing a team is only the first step: configure its credentials, parameters, tools, target resources, and least-privilege data access before using it. This version does not include standalone prebuilt-agent definition files outside the application export.
 
-## Prerequisites
+## Prerequisites and compatibility
 
-Before importing the application, make sure you have the following:
+Use a supported Oracle AI Database or Autonomous AI Database deployment where Oracle APEX and Oracle Select AI are available. The export was generated with Oracle APEX **24.2.17**; import it into a compatible APEX environment. Agent capabilities additionally require a deployment that supports the Oracle Select AI Agent Framework. Confirm feature availability, supported providers, and version requirements for your target database service before deployment.
 
-- An Oracle AI Database or Autonomous AI Database environment with Oracle APEX and Oracle Select AI available. The exported application was generated with Oracle APEX **24.2.17**; import it into a compatible APEX environment.
-- An APEX workspace and parsing schema. Import the export as that schema, or use a database account with `APEX_ADMINISTRATOR_ROLE`.
-- A configured Select AI provider credential, supported model, and AI Profile. The profile must be usable by the application's parsing schema.
-- For NL2SQL, access to the schemas and objects you intend to query.
-- For RAG, a configured embedding model and an Oracle AI Vector Search vector index containing the content to retrieve.
-- For agent experiences, the required Oracle Select AI Agent Framework configuration and an agent team selected in the application.
+### Minimum setup: Chat and NL2SQL
 
-Grant only the database privileges needed by the parsing schema and the users of the application. The exact grants depend on your database, provider, selected AI capabilities, and the data you expose. Consult your database administrator and the Oracle Select AI documentation before granting access to production data.
+- An APEX workspace and parsing schema. Import as that schema, or use a database account with `APEX_ADMINISTRATOR_ROLE`.
+- A Select AI provider credential, a supported model, and an AI Profile that the parsing schema can use.
+- For NL2SQL, least-privilege access from the parsing schema to only the schemas and objects the application should query.
+
+### Optional setup: RAG
+
+- A RAG AI Profile and trusted content indexed through Select AI or the Ask Oracle application interface.
+- An Oracle AI Vector Search vector index created for that RAG configuration. When the selected provider supplies a default embedding model, explicit embedding-model configuration may not be required.
+
+### Optional setup: Agent Framework and prebuilt agent teams
+
+- Oracle Select AI Agent Framework available and configured in the target database service.
+- An agent team selected in the application for agent conversations.
+- For each prebuilt agent team, configuration of its required credentials, parameters, tools, target resources, and data access. Do not assume an installed team is ready for use without this environment-specific setup.
+
+> **Safety note:** Test the application, RAG indexes, and agent teams in a non-production environment first. Apply least privilege to the parsing schema and to every credential, tool, and data source used by the application.
 
 ## Installation
 
@@ -79,8 +91,8 @@ Configure the application before making it available to end users:
 
 - **AI Profiles:** Create or select the profiles for Chat, NL2SQL, RAG, and agents. Validate the provider credential, model, and profile settings.
 - **Conversation defaults:** Choose the default conversation mode and the default NL2SQL Profile, RAG Profile, and optional Agent Team.
-- **RAG:** Set the embedding model, Oracle AI Vector Search vector index, and retrieval settings. Load and index your trusted content before testing retrieval.
-- **Agents:** Use Agent Builder to create or refine teams, agents, tasks, and tools; validate the team before assigning it as a default.
+- **RAG:** Select the RAG AI Profile, Oracle AI Vector Search vector index, and retrieval settings. Use the provider default embedding model where applicable, then load and index trusted content before testing retrieval.
+- **Agents:** Use Agent Builder to create or refine teams, agents, tasks, and tools; validate the team before assigning it as a default. For a prebuilt team, complete its required environment-specific configuration before validation.
 - **Governance:** Set application name, logo, branding, navigation, and permissions for actions such as SQL Editor, exports, deletion, conversation timer, and agent reasoning.
 
 ## Quick start and validation
@@ -93,7 +105,6 @@ After configuration, verify each enabled capability with a prompt appropriate fo
 | NL2SQL | Ask a question about a table the parsing schema can query, such as “How many orders were created this month?” |
 | RAG | Ask a question answered by content you have loaded into the configured vector index. |
 | Agents | Select an agent team and ask it to complete a task that uses its configured tools. |
-| Charts | Ask “Show monthly sales as a line chart.” Confirm that a chart, table, or another suitable display is returned. |
 
 ## Troubleshooting
 
@@ -104,7 +115,7 @@ After configuration, verify each enabled capability with a prompt appropriate fo
 | NL2SQL cannot query data | Verify grants and synonyms for the parsing schema, and confirm the profile is configured for the intended schemas and objects. |
 | RAG returns no relevant results | Confirm the correct embedding model, vector index, indexed content, and retrieval settings are configured. |
 | Agent option is unavailable or fails | Confirm Agent Framework configuration, validate the agent team, and select the team in the conversation settings. |
-| A chart is not shown | Confirm the prompt and result are suitable for a visualization; Ask Oracle may deliberately return a table or alternate chart when the requested shape is unsuitable. |
+| A prebuilt team cannot run | Complete the team's required credential, parameter, tool, target-resource, and data-access configuration, then validate it before use. |
 | A button or feature is missing | Review the application's action controls and button-level access settings for the current user. |
 
 ## Resources
