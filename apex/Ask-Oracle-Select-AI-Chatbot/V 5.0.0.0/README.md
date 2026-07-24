@@ -27,7 +27,7 @@ Release 5.0 helps teams move from asking questions to building governed AI appli
 - **Prebuilt agents** — install a provided agent through the application, then configure its required credentials, parameters, tools, and target resources, plus data access.
 - **Profiles and governance** — create, edit, validate, and reuse AI Profiles; configure application defaults, branding, and feature access.
 
-## Screenshots
+## User Interface
 
 ![Agent Builder showing an agent team with its agents, tasks, and assigned tools](../../images/agent_builder.png)
 
