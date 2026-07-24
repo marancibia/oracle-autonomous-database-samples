@@ -59,7 +59,14 @@ Use a supported Oracle AI Database or Autonomous AI Database deployment where Or
 
 - An APEX workspace and parsing schema. Import as that schema, or use a database account with `APEX_ADMINISTRATOR_ROLE`.
 - A Select AI provider credential, a supported model, and an AI Profile that the parsing schema can use.
-- For NL2SQL, least-privilege access from the parsing schema to only the schemas and objects the application should query.
+
+Grant the application install schema (`<APP_INSTALL_SCHEMA>`) execute access to the required Oracle Select AI packages:
+
+```sql
+grant execute on dbms_cloud to <APP_INSTALL_SCHEMA>;
+grant execute on dbms_cloud_ai to <APP_INSTALL_SCHEMA>;
+grant execute on dbms_cloud_ai_agent to <APP_INSTALL_SCHEMA>;
+```
 
 ### Optional setup: RAG
 
