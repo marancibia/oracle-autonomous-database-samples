@@ -35,6 +35,8 @@ Release 5.0 helps teams move from asking questions to building governed AI appli
 
 <br>
 <br>
+<br>
+<br>
 
 ![Agent Team Map showing relationships among teams, agents, tasks, and tools](../../images/agent_team_map.png)
 
