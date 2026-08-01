@@ -138,6 +138,38 @@ get_xml_export_tables:
   )
   ORDER BY 1;
 
+get_xml_index_path_tables:
+  WITH xml_index_tables AS (
+    SELECT x.table_owner AS owner,
+          x.path_table_name AS table_name
+    FROM   dba_xml_indexes x
+    WHERE  x.table_owner IN (${sc_list})
+      AND  upper(x.index_type) IN ('UNSTRUCTURED', 'STRUCTURED AND UNSTRUCTURED')
+      AND  x.path_table_name IS NOT NULL
+    UNION ALL
+    -- structured / hybrid XMLTable names
+    SELECT x.table_owner AS owner,
+          xt.xmltab_name AS table_name
+    FROM   dba_xml_indexes x,
+          XMLTABLE(
+            '/parameters/structured/group/xmltab'
+            PASSING x.parameters
+            COLUMNS xmltab_name VARCHAR2(128) PATH '@name'
+          ) xt
+    WHERE  x.table_owner IN (${sc_list})
+      AND  upper(x.index_type) IN ('STRUCTURED', 'STRUCTURED AND UNSTRUCTURED')
+      AND  x.parameters IS NOT NULL
+      AND  xt.xmltab_name IS NOT NULL
+  )
+  SELECT DISTINCT
+         x.table_name AS path_table
+  FROM xml_index_tables x
+  JOIN dba_tables t
+    ON t.owner = x.owner
+   AND t.table_name = x.table_name
+  WHERE t.tablespace_name IN (${ts_list})
+  ORDER BY 1;
+
 validate_tablespaces:
   declare
     l_platform_name v$database.platform_name%TYPE;
@@ -228,8 +260,8 @@ validate_tablespaces:
       select atc.owner,atc.table_name,atc.column_name,atc.data_type_owner,atc.data_type from all_tab_columns atc 
       JOIN all_tables at ON atc.table_name = at.table_name and atc.owner = at.owner 
       and at.tablespace_name = '${tablespace}' and atc.data_type_owner NOT IN (${sc_list})
-      ${exc_tbl_filter_dt} and atc.data_type <> 'XMLTYPE'
-      order by atc.owner, atc.table_name, atc.column_name
+      ${exc_tbl_filter_dt} and atc.data_type <> 'XMLTYPE' and atc.owner IN (${sc_list})
+    order by atc.owner, atc.table_name, atc.column_name
     ) loop
       l_msg := l_msg || chr(10) ||
                rec.owner || '.' || rec.table_name || '.' || rec.column_name ||
@@ -242,6 +274,49 @@ validate_tablespaces:
         'ERROR : Validation failed for tablespace "${tablespace}": Some columns reference data types owned by schemas that are not in the allowed transport list. ' || 
         'Ensure all referenced data types belong to the transported schemas. ' ||
         'Failing columns:' || l_msg;
+      if ('${dry_run}' = 'TRUE') then
+        dbms_output.put_line(l_msg);
+      else
+        raise_application_error(-20001, l_msg);
+      end if;
+    end if;
+
+    -- check if xml type tables of storage OBJECT-RELATIONAL or CLOB is used by the tablespace
+    -- These storage types are not supported by target
+    l_msg := '';
+    for rec in (
+      SELECT DISTINCT s.owner, x.table_name, x.storage_type, nvl(x.nonschema, 'NO') as nonschema
+      FROM dba_segments s
+      JOIN dba_xml_tab_cols x
+      ON s.owner = x.owner
+      AND s.segment_name = x.table_name
+      JOIN dba_tab_cols c
+      ON c.owner = x.owner
+      AND c.table_name = x.table_name
+      AND c.column_name = x.column_name
+      WHERE s.tablespace_name = '${tablespace}' ${exc_tbl_filter_xml}
+      and c.hidden_column = 'NO'
+      and ( x.storage_type <> 'BINARY' or nvl(x.nonschema, 'NO') <> 'YES' )
+      UNION
+      SELECT DISTINCT s.owner, xm.table_name, xm.storage_type, nvl(xm.nonschema, 'NO') as nonschema
+      FROM dba_segments s
+      JOIN dba_xml_tables xm
+      ON s.owner = xm.owner
+      AND s.segment_name = xm.table_name
+      WHERE s.tablespace_name = '${tablespace}' ${exc_tbl_filter_xml_cont}
+      and ( xm.storage_type <> 'BINARY' or nvl(xm.nonschema, 'NO') <> 'YES' )
+    ) loop
+    l_msg := l_msg || chr(10) ||
+               rec.owner || '.' || rec.table_name ||
+               ' has XMLType storage_type = ' || rec.storage_type ||
+               ', nonschema = ' || rec.nonschema;
+    end loop;  
+    
+    if length(l_msg) > 0 then
+      l_msg :=
+        'ERROR : Tablespace ${tablespace} has XMLType tables that are not non-schema Binary XML. ' ||
+        'ADBS supports XMLType Data Pump migration only for non-schema Binary XML. ' ||
+        'Failing tables:' || l_msg;
       if ('${dry_run}' = 'TRUE') then
         dbms_output.put_line(l_msg);
       else
@@ -302,7 +377,7 @@ validate_tablespaces:
 tts_transport_set_check:
   -- Perform TTS Check
   begin
-    dbms_tts.transport_set_check(ts_list => ${ts_list}, incl_constraints => TRUE, full_check => TRUE);
+    dbms_tts.transport_set_check(ts_list => ${ts_list}, incl_constraints => TRUE, full_check => FALSE);
   end;
   /
   select 'VIOLATION: ' || violations FROM transport_set_violations;
@@ -347,15 +422,11 @@ get_required_local_schemas:
     SELECT DISTINCT s.owner AS schema_name
     FROM dba_segments s
     WHERE s.tablespace_name IN (${ts_list})
-    
     UNION
-
     SELECT DISTINCT t.owner AS schema_name
     FROM dba_tables t
     WHERE t.tablespace_name IN (${ts_list})
-    
     UNION
-    
     SELECT DISTINCT i.owner AS schema_name
     FROM dba_indexes i
     WHERE i.tablespace_name IN (${ts_list})
@@ -471,7 +542,11 @@ logical_object_validation:
   SELECT 'OBJECT_GRANT_FAIL,' || ' GRANT TO ' || grantee || ' on ' || owner || '.' || table_name || ' will fail (GRANTEE NOT TRANSPORTED)'
   FROM dba_tab_privs
   WHERE owner in (${sc_list})
-    AND grantee not in (${sc_list});
+    AND grantee in (
+      SELECT username
+      FROM dba_users
+      WHERE username not in (${sc_list}) AND ${l_user_list_clause}
+    );
 
 tts_src_create_directory:
   set feedback off
@@ -663,6 +738,7 @@ tts_src_export_xml_tables:
   CLUSTER=NO
   ${job_name_str}
   LOGFILE=export_xml.log
+  ${exclude_clause}
 
 tts_src_export_tablespaces:
   USERID="${db_user}/${db_password}@${l_conn_str}"
@@ -714,13 +790,19 @@ validate_ols_policies:
   begin
     select count(*) into l_ols_enable from v$option where parameter = 'Oracle Label Security' and value = 'TRUE';
     select count(*) into l_ols_schema from dba_users where username = 'LBACSYS';
-    IF l_ols_enable > 0 and l_ols_schema > 0 THEN
-      FOR rec IN (SELECT policy_name FROM all_sa_table_policies where SCHEMA_NAME in (${sc_list})) LOOP
-        l_ols_policy_list := l_ols_policy_list || ';' || rec.policy_name;
-      END LOOP;
-      IF LENGTH(l_ols_policy_list) > 0 THEN
-          l_ols_policy_list := SUBSTR(l_ols_policy_list, 2);
-      END IF;
+    dbms_output.put_line(l_ols_enable || ',' || l_ols_schema);
+  end;
+  /
+
+get_ols_policies_list:
+  declare
+    l_ols_policy_list varchar2(30000) := '';
+  begin
+    FOR rec IN (SELECT policy_name FROM all_sa_table_policies where SCHEMA_NAME in (${sc_list})) LOOP
+      l_ols_policy_list := l_ols_policy_list || ';' || rec.policy_name;
+    END LOOP;
+    IF LENGTH(l_ols_policy_list) > 0 THEN
+        l_ols_policy_list := SUBSTR(l_ols_policy_list, 2);
     END IF;
     dbms_output.put_line(l_ols_policy_list);
   end;

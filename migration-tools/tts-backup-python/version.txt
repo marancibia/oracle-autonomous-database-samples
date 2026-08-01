@@ -1,3 +1,17 @@
+26.7.5.1 - 28 JUL 2026 - ZDM_RC
+ + Alter transport_set_check.full_check to false
+ + Add owner filter during col data type owner validation
+ + exclude statistics (if true) during xml tbl export
+
+26.7.3.2 - 17 JUL 2026
+ + Print parfile contents 
+ + Cleanup DirObj during dryrun jobs
+
+26.6.4.1 - 23 JUN 2026
+ + Added fix for all_sa_table_policies view does not exist issue
+ + use libopc from orahome for >=19c db
+ + validation- encrypted tbs are not supported in 11g db
+
 26.6.2.1 - 09 JUN 2026
  + support transport of common users 
  + support shared connection backup

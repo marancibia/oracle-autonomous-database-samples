@@ -879,6 +879,14 @@ class Environment:
       print(f"{index}. {err_msg}")
     return 1
 
+  def use_orahome_libopc(self):
+    return self.DB_VERSION.strip().lower() in ['19c', '23ai']
+
+  def get_libopc_path(self):
+    if self.use_orahome_libopc():
+      return os.path.join(self.ORAHOME, 'lib', 'libopc.so')
+    return os.path.join(self.PROJECT_DIR_PATH, 'libopc.so')
+
 class SqlPlus:
   """
   A class to run SQL commands using Oracle's SQL*Plus command-line tool.
@@ -1009,8 +1017,27 @@ class TTS_SRC_RUN_VALIDATIONS:
       print(f"Error while fetching tablespaces : {e}")
       raise
   
+  def _get_xml_index_path_tables(self, template):
+    try:
+      _log_file = os.path.join(
+        self._env.TTS_DIR_PATH,
+        f"{self._env.PROJECT_NAME}_get_xml_index_path_tables.log")
+      if not self._sqlplus.run_sql(
+          template.get('get_xml_index_path_tables'), _log_file):
+        raise ValueError(f"Failed to fetch XMLIndex path tables.")
+
+      with open(_log_file, "r") as file:
+        lines = file.readlines()
+        xml_index_path_tables = list(
+          dict.fromkeys(line.strip() for line in lines if line.strip()))
+      return ",".join(xml_index_path_tables)
+    except Exception as e:
+      print(f"Error while fetching XMLIndex path tables : {e}")
+      raise
+  
   def _get_xml_export_tables(self, template):
 
+    print("Fetching XML tables...")
     ts_list = split_into_lines(self._env.TABLESPACES)
     sc_list = split_into_lines(self._env.SCHEMAS)
 
@@ -1039,9 +1066,13 @@ class TTS_SRC_RUN_VALIDATIONS:
       self._env.xml_export_tables = ",".join(xml_export_tables)
       
       if(len(self._env.xml_export_tables)) > 0:
+        print("XML tables exist. Fetching XMLIndex path tables...")
         self._env.table_with_xml_type = 'true'
+        self._env.xml_index_path_tables = self._get_xml_index_path_tables(
+        template)
       else:
         self._env.table_with_xml_type = 'false'
+        self._env.xml_index_path_tables = ''
       return self._env.xml_export_tables
     except Exception as e:
       print(f"Error while fetching xml tables : {e}")
@@ -1133,7 +1164,7 @@ class TTS_SRC_RUN_VALIDATIONS:
       Configuration.substitutions = {
         'schema': schema,
         'ts_list': split_into_lines(self._env.TABLESPACES).upper(),
-        'dry_run': self._env.is_dry_run(),
+        'dry_run': self._env.DRY_RUN.strip().upper(),
         'exc_tbl_filter_t': exc_tbl_filter_t,
       }
 
@@ -1250,18 +1281,21 @@ class TTS_SRC_RUN_VALIDATIONS:
     
     for tablespace in ts_array:
       tablespace = tablespace.strip().upper()
+      log_size_before = (os.path.getsize(self.log_file) if os.path.isfile(self.log_file) else 0)
       print(f"Validate if tablespace {tablespace} is ready for transport...")
-      self._run_tablespace_validation_script(template, tablespace, sc_list, exc_tbl_list)
-      if os.path.isfile(self.log_file) and os.path.getsize(self.log_file) > 0:
+      self._run_tablespace_validation_script(template, tablespace, sc_list, exc_tbl_list, append_log=True)
+      log_size_after = (os.path.getsize(self.log_file) if os.path.isfile(self.log_file) else 0)
+      if log_size_after > log_size_before:
         print(f"Tablespace validations failed.")
         self._env.add_dry_run_log_errors(f"Tablespace {tablespace} validations failed.", self.log_file)
         self._print_log_and_exit(self.log_file, 0)
 
+    # TODO : perform TRANSPORT_SET_CHECK for platform_id=13 and dbversion <19.21 (no "for transport" clause)
     if self._env.is_dry_run() or self._env.BACKUP_LEVEL == 0 or self._env.DB_VERSION == '11g':
       ts_list = "'{}'".format(",".join(self._env.TABLESPACES.split(',')))
       Configuration.substitutions = {
         'ts_list': ts_list,
-        'dry_run': self._env.is_dry_run(),
+        'dry_run': self._env.DRY_RUN.strip().upper(),
       }
       print(f"Running DBMS_TTS.TRANSPORT_SET_CHECK for tablespaces: {self._env.TABLESPACES}")
       if not self._sqlplus.run_sql(template.get('tts_transport_set_check'), f"{self.log_file} append"):
@@ -1341,19 +1375,23 @@ class TTS_SRC_RUN_VALIDATIONS:
     print(f"Proceeding with the list specified during level 0: {level0_ts_set}")
     self._env.TABLESPACES = ",".join(level0_ts_array)
 
-  def _run_tablespace_validation_script(self, template, tablespace, sc_list, exc_tbl_list):
+  def _run_tablespace_validation_script(self, template, tablespace, sc_list, exc_tbl_list, append_log=False):
     """Run SQL validation for a single tablespace."""
     exc_tbl_filter_dt = f"and atc.table_name not in ({exc_tbl_list})" if exc_tbl_list.strip() else ""
+    exc_tbl_filter_xml = f"and x.table_name not in ({exc_tbl_list})" if exc_tbl_list.strip() else ""
+    exc_tbl_filter_xml_cont = f"and xm.table_name not in ({exc_tbl_list})" if exc_tbl_list.strip() else ""
 
     Configuration.substitutions = {
         'tablespace': tablespace.upper(),
         'final_backup': self._env.FINAL_BACKUP.upper(),
         'sc_list': sc_list.upper(),
         'exc_tbl_filter_dt': exc_tbl_filter_dt,
-        'dry_run': self._env.is_dry_run(),
+        'dry_run': self._env.DRY_RUN.strip().upper(),
+        'exc_tbl_filter_xml': exc_tbl_filter_xml,
+        'exc_tbl_filter_xml_cont': exc_tbl_filter_xml_cont,
       }
     
-    if not self._sqlplus.run_sql(template.get('validate_tablespaces'), self.log_file):
+    if not self._sqlplus.run_sql(template.get('validate_tablespaces'), self.log_file, append_log=append_log):
       print(f"Tablespace {tablespace} validations failed. \n")
       if self._env.is_dry_run():
         self._env.add_dry_run_log_errors(f"Tablespace {tablespace} validations failed.", self.log_file)
@@ -1420,7 +1458,7 @@ class TTS_SRC_RUN_VALIDATIONS:
     """OLS Policies validation"""
     print("Validating OLS policies...")
     sc_list = split_into_lines(self._env.SCHEMAS)
-
+    ols_pls = ''
     Configuration.substitutions = {
         'sc_list': sc_list.upper(),
       }
@@ -1436,16 +1474,32 @@ class TTS_SRC_RUN_VALIDATIONS:
         self._print_log_and_exit(log_file)
     
     with open(log_file, 'r') as log:
-      ols_pls = log.read().strip()
-    
-    if ols_pls and self._env.TRANSPORT_TABLES_PROTECTED_BY_OLS_POLICIES.upper() == "FALSE":
-      print("OLS Policies found in the database. You have to create the OLS policies in ADB-S database. Data protected by OLS will be unprotected in ADB-S otherwise.\n")
-      err_msg = f"[ERROR] Please provide consent to transport tables protected by OLS policies by specifying TRANSPORT_TABLES_PROTECTED_BY_OLS_POLICIES=TRUE. OLS policies found are : {ols_pls}"
-      print(err_msg)
-      self._env.add_dry_run_error(err_msg)
-      if not self._env.is_dry_run():
-        exit(1)
+      ols_output = log.read().strip()
+    ols_array = ols_output.split(',')
 
+    is_ols_enabled = all(int(x) > 0 for x in ols_array)
+
+    if is_ols_enabled:
+      print("Getting OLS policies in schema list")
+      log_file = os.path.join(self._env.TTS_DIR_PATH, f"{self._env.PROJECT_NAME}_ols_policies.log")
+      if not self._sqlplus.run_sql(template.get('get_ols_policies_list'), log_file):
+        print("Unable to get OLS policies\n")
+        if self._env.is_dry_run():
+          self._env.add_dry_run_log_errors("Get OLS Policies failed.", log_file)
+          self._print_log_and_exit(log_file, 0)
+          return ''
+        else:
+          self._print_log_and_exit(log_file)
+      with open(log_file, 'r') as log:
+        ols_pls = log.read().strip()
+    
+      if ols_pls and self._env.TRANSPORT_TABLES_PROTECTED_BY_OLS_POLICIES.upper() == "FALSE":
+        print("OLS Policies found in the database. You have to create the OLS policies in ADB-S database. Data protected by OLS will be unprotected in ADB-S otherwise.\n")
+        err_msg = f"[ERROR] Please provide consent to transport tables protected by OLS policies by specifying TRANSPORT_TABLES_PROTECTED_BY_OLS_POLICIES=TRUE. OLS policies found are : {ols_pls}"
+        print(err_msg)
+        self._env.add_dry_run_error(err_msg)
+        if not self._env.is_dry_run():
+          exit(1)
     return ols_pls
   
   def _validate_dvrealm(self, template):
@@ -1488,7 +1542,7 @@ class TTS_SRC_RUN_VALIDATIONS:
       dvrealm_output = log.read().strip()
     dvrealm_array = dvrealm_output.split(',')
 
-    is_dv_enabled = all(int(x) > 0 for x in dvrealm_array[:3])
+    is_dv_enabled = all(int(x) > 0 for x in dvrealm_array)
     if is_dv_enabled: 
       if not self._env.DVREALM_USER.strip() or not self._env.DVREALM_PASSWORD.strip():
         err_msg = "[ERROR] Database Vault is enabled in the database. Please provide inputs for DVREALM_USER and DVREALM_PASSWORD."
@@ -1665,10 +1719,11 @@ class TTS_SRC_CREATE_WALLET:
         '-cOCID', self._env.COMPARTMENT_OCID,
         '-bucket', self._env.TTS_BACKUP_URL.split('/')[-1],
         '-walletDir', self._env.TTS_DIR_PATH,
-        '-libDir', self._env.PROJECT_DIR_PATH,
         '-configFile', os.path.join(self._env.ORAHOME, 'dbs', f'opc{os.environ["ORACLE_SID"]}.ora'),
         '-import-all-trustcerts'
     ]
+    if not self._env.use_orahome_libopc():
+      command.extend(['-libDir', self._env.PROJECT_DIR_PATH])
     if self._env.OCI_PROXY_HOST and self._env.OCI_PROXY_PORT:
       command.extend(['-proxyHost', self._env.OCI_PROXY_HOST])
       command.extend(['-proxyPort', self._env.OCI_PROXY_PORT])
@@ -1928,12 +1983,13 @@ class TTS_SRC_WALLET_COPIER:
       print(f"Successfully copied wallet to {host_name}.")
 
       # Use SCP to copy the libopc.so file to other instance
-      local_lipopc_path = os.path.join(self._env.PROJECT_DIR_PATH, "libopc.so")
-      remote_lipopc_path = os.path.join(self._env.PROJECT_DIR_PATH, "libopc.so")
-      cmd_scp = f"scp -oStrictHostKeyChecking=no {local_lipopc_path} {host_name}:{remote_lipopc_path}"
-      print(f"Copying {local_lipopc_path} to {host_name}:{remote_lipopc_path}...")
-      subprocess.run(cmd_scp, shell=True, check=True)
-      print(f"Successfully copied libopc.so to {host_name}.")
+      if not self._env.use_orahome_libopc():
+        local_lipopc_path = os.path.join(self._env.PROJECT_DIR_PATH, "libopc.so")
+        remote_lipopc_path = os.path.join(self._env.PROJECT_DIR_PATH, "libopc.so")
+        cmd_scp = f"scp -oStrictHostKeyChecking=no {local_lipopc_path} {host_name}:{remote_lipopc_path}"
+        print(f"Copying {local_lipopc_path} to {host_name}:{remote_lipopc_path}...")
+        subprocess.run(cmd_scp, shell=True, check=True)
+        print(f"Successfully copied libopc.so to {host_name}.")
     except subprocess.CalledProcessError as e:
       print(f"Failed to copy wallet to {host_name}: {e} \n")
     except Exception as e:
@@ -2106,7 +2162,7 @@ class TTS_SRC_RMAN_BACKUP:
       """
     else:
       rman_parms = f"""
-      parms='SBT_LIBRARY={self._env.PROJECT_DIR_PATH}/libopc.so, 
+      parms='SBT_LIBRARY={self._env.get_libopc_path()}, 
       ENV=(OPC_WALLET="LOCATION=file:{self._env.TTS_DIR_PATH} CREDENTIAL_ALIAS={self._env.TTS_WALLET_CRED_ALIAS}",
       OPC_HOST={self._env.TTS_BACKUP_URL.split('/b/')[0]}, 
       OPC_CONTAINER={self._env.TTS_BACKUP_URL.split('/b/')[1]}, 
@@ -2117,6 +2173,10 @@ class TTS_SRC_RMAN_BACKUP:
       _OPC_TAG_METERING=FALSE)';
       """
 
+    libopc_path = self._env.get_libopc_path()
+    if not os.path.isfile(libopc_path):
+      raise FileNotFoundError(f"libopc.so not found at {libopc_path}")
+      
     count = 0
     current_host = socket.gethostname()
     for c in range(1, self._env.CPU_COUNT + 1):
@@ -2382,6 +2442,16 @@ class TTS_SRC_RMAN_BACKUP:
     parfile_path = self._write_expdp_parfile("expdp_schema.par", template.get("tts_src_export_schema"))
     try:
       return_val = self._execute_expdp_parfile(parfile_path)
+      if return_val:
+        print("EXPDP tablespace metadata export failed.")
+        print(f"Generated EXPDP parfile ({parfile_path}) [USERID redacted]:")
+
+        with open(parfile_path, "r") as parfile:
+          for line in parfile:
+            if line.strip().upper().startswith("USERID="):
+              print("  USERID=<redacted>")
+            else:
+              print(f"  {line.rstrip()}")
     finally:
       if os.path.exists(parfile_path):
         os.remove(parfile_path)
@@ -2413,6 +2483,17 @@ class TTS_SRC_RMAN_BACKUP:
     if self._env.ZDM_BASED_TRANSPORT.upper() == "TRUE":
       job_name_str = f'JOB_NAME={self._env.PROJECT_NAME}_ZDM_XML_EXPORT'
 
+    exclude_clauses = [
+      'EXCLUDE=INDEX:"IN (SELECT index_name FROM dba_xml_indexes '
+      f'WHERE upper(index_type) <> \'STRUCTURED\' '
+      f'AND table_owner IN ({split_into_lines(self._env.SCHEMAS).upper()}))"'
+    ]
+
+    if self._env.EXCLUDE_STATISTICS.strip().upper() == "TRUE":
+      exclude_clauses.append("EXCLUDE=STATISTICS,INDEX_STATISTICS,TABLE_STATISTICS")
+    
+    exclude_clause = "\n".join(exclude_clauses)
+
     Configuration.substitutions = {
         'oracle_home': self._env.ORAHOME,
         'db_user': self._env.DBUSER,
@@ -2420,12 +2501,23 @@ class TTS_SRC_RMAN_BACKUP:
         'xml_export_tables': self._env.xml_export_tables,
         'l_conn_str': l_conn_str,
         'tts_dir_name': self._env.TTS_DIR_NAME,
+        'exclude_clause': exclude_clause,
         'job_name_str': job_name_str.upper(),
       }
 
     parfile_path = self._write_expdp_parfile("expdp_xml.par", template.get("tts_src_export_xml_tables"))
     try:
       return_val = self._execute_expdp_parfile(parfile_path)
+      if return_val:
+        print("EXPDP tablespace metadata export failed.")
+        print(f"Generated EXPDP parfile ({parfile_path}) [USERID redacted]:")
+
+        with open(parfile_path, "r") as parfile:
+          for line in parfile:
+            if line.strip().upper().startswith("USERID="):
+              print("  USERID=<redacted>")
+            else:
+              print(f"  {line.rstrip()}")
     finally:
       if os.path.exists(parfile_path):
         os.remove(parfile_path)
@@ -2445,6 +2537,52 @@ class TTS_SRC_RMAN_BACKUP:
       return 1
     return return_val
   
+  def _build_exclude_table_clauses(self, table_names, max_clause_len=3900):
+    """
+    Build one or more EXCLUDE=TABLE:"IN (...)" lines, keeping each line
+    below the Data Pump parameter-size limit.
+    """
+
+    def quoted_name(table_name: str) -> str:
+        return "'{0}'".format(table_name.replace("'", "''"))
+
+    clause_prefix = 'EXCLUDE=TABLE:"IN ('
+    clause_suffix = ')"'
+
+    exclude_clauses = []
+    current_chunk = []
+    current_clause_length = len(clause_prefix) + len(clause_suffix)
+
+    for table_name in table_names:
+        quoted_table_name = quoted_name(table_name)
+        additional_length = (
+            len(quoted_table_name) + (1 if current_chunk else 0)
+        )
+
+        if (
+            current_chunk
+            and current_clause_length + additional_length > max_clause_len
+        ):
+            exclude_clauses.append(
+                clause_prefix + ",".join(current_chunk) + clause_suffix
+            )
+            current_chunk = [quoted_table_name]
+            current_clause_length = (
+                len(clause_prefix)
+                + len(clause_suffix)
+                + len(quoted_table_name)
+            )
+        else:
+            current_chunk.append(quoted_table_name)
+            current_clause_length += additional_length
+
+    if current_chunk:
+        exclude_clauses.append(
+            clause_prefix + ",".join(current_chunk) + clause_suffix
+        )
+
+    return exclude_clauses
+  
   def tts_src_export_tablespaces(self, template, _validate=False):
     """Export tablespaces"""
     if _validate:
@@ -2456,32 +2594,32 @@ class TTS_SRC_RMAN_BACKUP:
 
     l_conn_str = f"{self._env.HOSTNAME}:{self._env.LSNR_PORT}/{self._env.DB_SVC_NAME} AS SYSDBA"
       
-    exclude_table_list = [tbl.strip() for tbl in self._env.EXCLUDE_TABLES.split(',') if tbl.strip()]
+    exclude_table_list = [
+        tbl.strip()
+        for tbl in self._env.EXCLUDE_TABLES.split(',')
+        if tbl.strip()
+    ]
     xml_table_list = [
         tbl.strip().split('.')[-1].replace('"', '')
         for tbl in self._env.xml_export_tables.split(',')
         if tbl.strip()
     ]
-    tables_to_exclude = list(dict.fromkeys(exclude_table_list + xml_table_list))
-    quoted_tables = ",".join(f"'{tbl}'" for tbl in tables_to_exclude)
-    
-    exclude_filters = []
-    
-    xml_table_exclude_clause = ""
-    if quoted_tables:
-      xml_table_exclude_clause = f'TABLE:"IN ({quoted_tables})"'
-      exclude_filters.append(xml_table_exclude_clause)
+    xml_index_path_table_list = [
+        tbl.strip()
+        for tbl in self._env.xml_index_path_tables.split(',')
+        if tbl.strip()
+    ]
+    tables_to_exclude = list(dict.fromkeys(
+        exclude_table_list + xml_table_list + xml_index_path_table_list))
+
+    exclude_clauses = self._build_exclude_table_clauses(tables_to_exclude)
 
     if self._env.EXCLUDE_STATISTICS.strip().upper() == "TRUE":
-      exclude_filters.extend([
-        "STATISTICS",
-        "INDEX_STATISTICS",
-        "TABLE_STATISTICS"
-      ])
-    
-    exclude_clause = ""
-    if exclude_filters:
-      exclude_clause = f"EXCLUDE={','.join(exclude_filters)}" 
+        exclude_clauses.append(
+            "EXCLUDE=STATISTICS,INDEX_STATISTICS,TABLE_STATISTICS"
+        )
+
+    exclude_clause = "\n".join(exclude_clauses) 
     
     job_name_str = ""
     if self._env.ZDM_BASED_TRANSPORT.upper() == "TRUE":
@@ -2506,6 +2644,16 @@ class TTS_SRC_RMAN_BACKUP:
     parfile_path = self._write_expdp_parfile("expdp_tablespace.par", template.get("tts_src_export_tablespaces"))
     try:
       return_val = self._execute_expdp_parfile(parfile_path)
+      if return_val:
+        print("EXPDP tablespace metadata export failed.")
+        print(f"Generated EXPDP parfile ({parfile_path}) [USERID redacted]:")
+
+        with open(parfile_path, "r") as parfile:
+          for line in parfile:
+            if line.strip().upper().startswith("USERID="):
+              print("  USERID=<redacted>")
+            else:
+              print(f"  {line.rstrip()}")
     finally:
       if os.path.exists(parfile_path):
         os.remove(parfile_path)
@@ -2691,8 +2839,8 @@ class TTS_SRC_BUNDLE_MANAGER:
     os.chdir(current_dir)
 
     # Cleanup libopc.so downloaded by OCI Installer
-    if self._env.STORAGE_TYPE == "OBJECT_STORAGE":
-      os.remove(os.path.join(self._env.PROJECT_DIR_PATH, 'libopc.so'))
+    if self._env.STORAGE_TYPE == "OBJECT_STORAGE" and not self._env.use_orahome_libopc():
+      os.remove(self._env.get_libopc_path())
 
       # Remove remote directory created on other rac instances
       self.hosts = [host.strip() for host in self._env.DB_PROPS_ARRAY[13].split(';') if host.strip()]
@@ -2809,7 +2957,6 @@ def main(args):
     _env.SCHEMAS = run_validations._get_schemas(template)
     print(f"\n SCHEMAS LIST : {_env.SCHEMAS}")
     print(f"\n COMMON USER REMAP LIST : {_env.COMMON_USER_REMAP}")
-    _env.xml_export_tables = run_validations._get_xml_export_tables(template)
     _env.ols_policies_list = run_validations._validate_ols_policies(template)
     if _env.DB_VERSION != '11g':
       _env.redaction_policies_list = run_validations._validate_redaction_policies(template)
@@ -2819,6 +2966,7 @@ def main(args):
       run_validations._validate_dvrealm(template)
     run_validations._validate_schemas(template)
     run_validations._validate_tablespaces(template)
+    _env.xml_export_tables = run_validations._get_xml_export_tables(template)
     log_end_time(start_time)
 
     if _env.STORAGE_TYPE == 'OBJECT_STORAGE':
@@ -2857,6 +3005,13 @@ def main(args):
     _env.role_list = _env.DB_PROPS_ARRAY[21].replace(';', ',')
     _env.mview_schemas = _env.DB_PROPS_ARRAY[22].replace(';', ',')
     _env.sched_cred_list = _env.DB_PROPS_ARRAY[23].replace(';', ',')
+
+    if _env.DB_VERSION.strip().lower() == '11g' and _env.encrypted_tablespaces.strip():
+      print(
+        f"ERROR: Encrypted tablespaces are not supported for 11g databases: "
+        f"{_env.encrypted_tablespaces}."
+      )
+      exit(1)
 
     _env.TBS_READ_ONLY = _env.DB_PROPS_ARRAY[14]
     _env.TBS_READ_ONLY = _env.TBS_READ_ONLY.rstrip() # Remove trailing whitespace
@@ -2988,7 +3143,7 @@ def main(args):
       log_end_time(start_time)
 
       if _env.STORAGE_TYPE == "FSS":
-        print(f"ADB$TTS_BUNDLE_URL : {_env.TTS_FSS_CONFIG}/{_env.BUNDLE_FILE_NAME}")
+        print(f"ADB$TTS_BUNDLE_URL: {_env.TTS_FSS_CONFIG}/{_env.BUNDLE_FILE_NAME}")
         print("---------")  
     else:
       if _env.DB_VERSION != '11g':
@@ -2999,6 +3154,14 @@ def main(args):
           print("Export Tablespace metadata Failed.\n")
           _env.add_dry_run_error("Validation export for tablespaces metadata using datapump failed.")
         log_end_time(start_time)
+
+      print("\n* Dry run cleanup: dropping the TTS directory object...\n")
+      start_time = log_start_time()
+      try:
+        directory_manager.tts_src_drop_directory(template)
+      except RuntimeError as err:
+        _env.add_dry_run_error(f"Dry-run cleanup failed: {err}")
+      log_end_time(start_time)
       sys.exit(_env.report_dry_run_result())
 
   except FileNotFoundError as err_msg:
