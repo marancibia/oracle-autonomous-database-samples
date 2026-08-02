@@ -1,5 +1,14 @@
 # Migrate Databases to Autonomous AI Database using Transportable Tablespaces
 
+## Latest release
+
+Current release: **26.7.5.1** (28 Jul 2026).
+
+Verify the downloaded utility version:
+```
+python3 tts-backup.py --version
+```
+
 Transportable Tablespaces feature can be used to migrate Oracle database tablespaces from customer on-premise or another Oracle Database Cloud Service into Oracle Autonomous AI Database Cloud Service. User tablespaces along with the necessary schemas can be migrated using the Transportable Tablespaces mechanism. 
 
 Transportable Tablespaces mechanism uses RMAN Backup/Restore and Data Pump Export/Import to transport data and metadata between source databse and Autonomous AI Database. Customers can migrate both bigfile and smallfile tabalespaces. Tablespaces in source database be can encrypted or unencrypted. Migration can be done in full or incremental modes. Customers can use Oracle Cloud Infrastructure (OCI) Object Storage or File Storage Service (FSS) as intermediary for the migration. Source database can be of version 11g or higher. Tablespaces can be migrated to Oracle Autonomous AI Database version 19c or 23ai.
@@ -269,7 +278,7 @@ Transporting Tablespaces involves below high level steps.
    
 ### Configure OCI File System
 
-Create a File System by providing Export and Mount Target information. Refer to [How to Attach a File System to your Autonomous AI Database](https://blogs.oracle.com/datawarehousing/post/attach-file-system-autonomous-database) and use the guidelines for creating the file system. User has to mount the File System to the source database host(s) using the **Mount Commands** provided by the **File System** -> **Export**. Refer to [Mounting File Systems From UNIX-Style Instances](https://docs.oracle.com/en-us/iaas/Content/File/Tasks/mountingunixstyleos.htm) for detailed instructions.
+Create a File System by providing Export and Mount Target information. Refer to [How to Attach a File System to your Autonomous AI Database](https://blogs.oracle.com/datawarehousing/post/attach-file-system-autonomous-database) and use the guidelines for creating the file system. Refer [Configuring VCN Security Rules for File Storage](https://docs.oracle.com/en-us/iaas/Content/File/Tasks/securitylistsfilestorage.htm#Configuring_VCN_Security_Rules_for_File_Storage) for detailed instructions. User has to mount the File System to the source database host(s) using the **Mount Commands** provided by the **File System** -> **Export**. Refer to [Mounting File Systems From UNIX-Style Instances](https://docs.oracle.com/en-us/iaas/Content/File/Tasks/mountingunixstyleos.htm) for detailed instructions.
 
 ### Backup Tablespaces on Source Database
 
